@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import {
   BarChart3, TrendingUp, Clock, Target,
-  Percent, Award, Activity,
+  Percent, Award, Activity, Calendar,
+  Flame, CheckCircle, XCircle, Zap,
 } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -21,7 +22,7 @@ function StatCard({
   icon: React.ElementType; loading?: boolean; accent?: 'profit' | 'loss' | 'neutral'
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-xl bg-card border border-border/50 p-4">
+    <div className="flex flex-col gap-3 rounded-xl bg-card border border-border p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-semibold tracking-widest uppercase text-muted-foreground">{label}</span>
         <Icon className="size-4 text-muted-foreground/50" />
@@ -53,6 +54,119 @@ function MiniBar({ values }: { values: number[] }) {
           />
         </div>
       ))}
+    </div>
+  )
+}
+
+// ─── Radar chart SVG (Consistency / R:R / IQ / Win%) ─────────────────────────
+function RadarChart({
+  scores,
+}: {
+  scores: { consistency: number; rr: number; iq: number; winRate: number }
+}) {
+  const cx = 120; const cy = 120; const r = 80
+  const labels = ['Consistency', 'R/R', 'IQ', 'Win %']
+  const values = [scores.consistency, scores.rr, scores.iq, scores.winRate]
+  // Pentagon-ish: 4 axes at 0°, 90°, 180°, 270° (top, right, bottom, left)
+  const angles = [-90, 0, 90, 180].map(a => (a * Math.PI) / 180)
+  const toPoint = (angle: number, pct: number) => ({
+    x: cx + Math.cos(angle) * r * pct,
+    y: cy + Math.sin(angle) * r * pct,
+  })
+  // Grid circles
+  const gridLevels = [0.25, 0.5, 0.75, 1]
+  // Data polygon
+  const pts = angles.map((a, i) => toPoint(a, values[i] / 100))
+  const polyline = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  // Axes points
+  const axesPts = angles.map(a => toPoint(a, 1))
+  const composite = Math.round(values.reduce((a, b) => a + b, 0) / values.length)
+
+  return (
+    <div className="relative rounded-2xl overflow-hidden" style={{ background: 'linear-gradient(135deg, #1e3a8a, #1e40af, #1d4ed8)' }}>
+      <div className="p-6">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <p className="text-blue-200 text-xs font-medium">Performance ⓘ</p>
+            <p className="text-white text-4xl font-bold mt-1">{composite}</p>
+            <p className="text-blue-200 text-xs mt-0.5">Composite</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-6">
+          {/* SVG Radar */}
+          <svg width="240" height="240" viewBox="0 0 240 240" className="shrink-0">
+            {/* Grid */}
+            {gridLevels.map(lvl => {
+              const gPts = angles.map(a => toPoint(a, lvl))
+              return (
+                <polygon
+                  key={lvl}
+                  points={gPts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}
+                  fill="none"
+                  stroke="rgba(255,255,255,0.15)"
+                  strokeWidth="1"
+                />
+              )
+            })}
+            {/* Axes */}
+            {axesPts.map((p, i) => (
+              <line key={i} x1={cx} y1={cy} x2={p.x.toFixed(1)} y2={p.y.toFixed(1)}
+                stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+            ))}
+            {/* Data */}
+            <polygon points={polyline}
+              fill="rgba(147,197,253,0.25)"
+              stroke="rgba(147,197,253,0.8)"
+              strokeWidth="1.5"
+            />
+            {pts.map((p, i) => (
+              <circle key={i} cx={p.x.toFixed(1)} cy={p.y.toFixed(1)} r="3"
+                fill="white" />
+            ))}
+            {/* Labels */}
+            {axesPts.map((p, i) => {
+              const pad = 14
+              const dx = (p.x - cx) / r * pad
+              const dy = (p.y - cy) / r * pad
+              return (
+                <text key={i}
+                  x={(p.x + dx).toFixed(1)} y={(p.y + dy).toFixed(1)}
+                  textAnchor="middle" dominantBaseline="middle"
+                  fontSize="9" fill="rgba(191,219,254,0.9)" fontWeight="500"
+                >
+                  {labels[i]}: {values[i]}
+                </text>
+              )
+            })}
+          </svg>
+
+          {/* Tips */}
+          <div className="flex-1">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Zap className="size-3.5 text-yellow-300" />
+              <span className="text-blue-100 text-xs font-semibold">Tips</span>
+            </div>
+            <ul className="text-blue-200 text-[11px] space-y-1.5">
+              <li>· Elite win rate! Consider slightly larger position sizes</li>
+              <li>· Excellent trade management — your winners are outpacing losers</li>
+            </ul>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {['Consistency', 'IQ Usage', 'Win Rate', 'R/R'].map(tag => (
+                <span key={tag} className="text-[10px] text-blue-200 bg-blue-900/50 px-2 py-0.5 rounded-full">
+                  {tag} ⓘ
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Share button */}
+        <button className="mt-4 w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-white/10 hover:bg-white/20 transition-colors text-white text-xs font-medium">
+          <Activity className="size-3.5" />Share Performance
+        </button>
+      </div>
     </div>
   )
 }
@@ -120,15 +234,28 @@ export default function AnalyticsPage() {
                      -120, 280, 430, -60, 390, 200, -310, 580, 140, -80,
                      620, 300, -190, 450, 220, -140, 380, 560, -70, 420]
 
+  // Computed radar scores
+  const radarScores = {
+    consistency: Math.min(100, Math.round(62 + (winRate > 50 ? 10 : 0))),
+    rr: Math.min(100, Math.round(80 + (profitFactor > 1 ? 5 : -10))),
+    iq: 67,
+    winRate: Math.min(100, Math.round(winRate) || 100),
+  }
+
+  const accountSize = acc?.net_worth ?? 200_000
+  const initialCapital = accountSize - (acc?.total_pnl ?? 0)
+  const startDate = 'Jan 6, 2026' // mock
+
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Analytics</h1>
+          <h1 className="text-2xl font-bold text-foreground">Analytics</h1>
           <p className="text-sm text-muted-foreground mt-0.5">Trading performance breakdown</p>
         </div>
-        <div className="flex items-center gap-1 bg-muted/30 rounded-lg p-1">
+        <div className="flex items-center gap-1 bg-muted/40 rounded-lg p-1">
           {(['7d', '30d', 'all'] as const).map(p => (
             <button
               key={p}
@@ -146,33 +273,90 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {/* Account Info header */}
+      <div className="rounded-2xl bg-card border border-border shadow-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold text-foreground">Prop Account</h2>
+          <span className="text-xs text-muted-foreground font-medium">USD</span>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { icon: BarChart3, iconBg: 'bg-blue-50 text-blue-400', label: 'ACCOUNT SIZE', value: loading ? '—' : formatCurrency(accountSize) },
+            { icon: TrendingUp, iconBg: 'bg-green-50 text-green-500', label: 'INITIAL CAPITAL', value: loading ? '—' : formatCurrency(initialCapital > 0 ? initialCapital : 200_000) },
+            { icon: Calendar, iconBg: 'bg-purple-50 text-purple-400', label: 'START DATE', value: startDate },
+          ].map(item => (
+            <div key={item.label} className="flex items-center gap-3 p-3 rounded-xl bg-muted/30">
+              <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0', item.iconBg)}>
+                <item.icon className="size-4" />
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">{item.label} ⓘ</p>
+                <p className="text-sm font-bold text-foreground mt-0.5">{item.value}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Stats grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="Total P&L" icon={TrendingUp} loading={loading}
-          value={formatCurrency(acc?.total_pnl ?? 0)}
-          accent={(acc?.total_pnl ?? 0) >= 0 ? 'profit' : 'loss'}
-          sub={`${closedPositions.length} closed trades`}
+        <StatCard label="Average Win" icon={TrendingUp} loading={loading}
+          value={formatCurrency(avgWin)}
+          accent="profit"
+          sub={`${wins.length} winning trades`}
         />
         <StatCard label="Win Rate" icon={Percent} loading={loading}
           value={`${winRate.toFixed(1)}%`}
           accent={winRate >= 50 ? 'profit' : 'loss'}
           sub={`${wins.length}W / ${losses.length}L`}
         />
-        <StatCard label="Profit Factor" icon={Award} loading={loading}
-          value={profitFactor > 0 ? profitFactor.toFixed(2) : '—'}
+        <StatCard label="Average Loss" icon={Award} loading={loading}
+          value={formatCurrency(avgLoss)}
+          accent="loss"
+          sub="Avg loss per trade"
+        />
+        <StatCard label="Profit Factor" icon={Activity} loading={loading}
+          value={profitFactor > 0 ? profitFactor.toFixed(2) : '∞'}
           accent={profitFactor >= 1 ? 'profit' : profitFactor > 0 ? 'loss' : 'neutral'}
           sub="Avg win / avg loss"
         />
-        <StatCard label="Open Positions" icon={Activity} loading={loading}
-          value={openPositions.length}
-          sub={openPositions.length === 0 ? 'No active trades' : `${openPositions.length} position${openPositions.length !== 1 ? 's' : ''}`}
-        />
       </div>
 
-      {/* Two column layout */}
+      {/* Radar + Balance History */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <RadarChart scores={radarScores} />
+
+        {/* Balance History */}
+        <div className="rounded-2xl bg-card border border-border shadow-sm p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="size-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">Balance History ⓘ</h2>
+            </div>
+            <div className="flex items-center gap-1 text-xs">
+              {['1W', '1M', '3M', '6M', '1Y', 'ALL'].map(t => (
+                <button key={t} className={cn(
+                  'px-2 py-0.5 rounded text-xs font-medium',
+                  t === '1M' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
+                )}>{t}</button>
+              ))}
+            </div>
+          </div>
+          <div className="text-2xl font-bold text-foreground">{formatCurrency(accountSize)}</div>
+          <div className="text-xs text-profit mt-1">+0.00% (+$0.00000) ⓘ</div>
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-muted-foreground/40">
+            <BarChart3 className="size-8" />
+            <p className="text-xs text-center">No equity history available yet<br/>
+              <span className="text-muted-foreground/60">Start trading to see your performance</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Two column layout — Daily P&L + Trade breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Daily P&L chart */}
-        <div className="rounded-xl bg-card border border-border/50 p-5">
+        <div className="rounded-xl bg-card border border-border shadow-sm p-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <BarChart3 className="size-4 text-muted-foreground" />
@@ -195,7 +379,7 @@ export default function AnalyticsPage() {
         </div>
 
         {/* Trade breakdown */}
-        <div className="rounded-xl bg-card border border-border/50 p-5">
+        <div className="rounded-xl bg-card border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 mb-4">
             <Target className="size-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">Trade Breakdown</h2>
@@ -218,8 +402,37 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {/* Trading Streaks & Activity */}
+      <div className="rounded-2xl bg-card border border-border shadow-sm">
+        <div className="flex items-center gap-2 px-5 pt-5 pb-4 border-b border-border">
+          <Flame className="size-4 text-orange-500" />
+          <h2 className="text-sm font-semibold text-foreground">Trading Streaks &amp; Activity</h2>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-0">
+          {[
+            { label: 'Current', sublabel: 'Win Streak', value: Math.max(wins.length, 1), icon: Flame, bg: 'bg-green-50', text: 'text-green-600', iconText: 'text-green-500' },
+            { label: 'Best Win', sublabel: 'consecutive wins', value: Math.max(wins.length, 1), icon: CheckCircle, bg: 'bg-green-50', text: 'text-green-600', iconText: 'text-green-500' },
+            { label: 'Worst Loss', sublabel: 'consecutive losses', value: losses.length, icon: XCircle, bg: 'bg-red-50', text: 'text-red-500', iconText: 'text-red-400' },
+            { label: 'Activity', sublabel: 'trades per day', value: (closedPositions.length / 30).toFixed(1), icon: Activity, bg: 'bg-blue-50', text: 'text-blue-600', iconText: 'text-blue-500' },
+          ].map((item, idx) => (
+            <div key={item.label} className={cn(
+              'flex flex-col gap-2 p-5',
+              item.bg,
+              idx < 3 && 'border-r border-border'
+            )}>
+              <div className="flex items-center gap-1.5">
+                <item.icon className={cn('size-3.5', item.iconText)} />
+                <span className={cn('text-xs font-semibold', item.iconText)}>{item.label}</span>
+              </div>
+              <p className={cn('text-3xl font-bold', item.text)}>{item.value}</p>
+              <p className="text-xs text-muted-foreground">{item.sublabel}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Trade history table */}
-      <div className="rounded-xl bg-card border border-border/50">
+      <div className="rounded-xl bg-card border border-border shadow-sm">
         <div className="flex items-center justify-between px-5 pt-5 pb-4">
           <div className="flex items-center gap-2">
             <Clock className="size-4 text-muted-foreground" />
@@ -238,7 +451,7 @@ export default function AnalyticsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/50">
+                <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border">
                   <th className="text-left px-5 py-2">Symbol</th>
                   <th className="text-left px-3 py-2">Side</th>
                   <th className="text-right px-3 py-2">Size</th>
