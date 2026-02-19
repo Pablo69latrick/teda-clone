@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { ChevronDown, ChevronUp, X } from 'lucide-react'
 import { cn, formatCurrency, formatPercent, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { useTradingData } from '@/lib/hooks'
+import { useSWRConfig } from 'swr'
 import type { Position } from '@/types'
 
 type BottomTab = 'positions' | 'orders' | 'history' | 'assets' | 'notifications'
@@ -56,10 +57,12 @@ function LivePositionRow({
   pos,
   markPrice,
   onClose,
+  closing = false,
 }: {
   pos: Position
   markPrice: number
   onClose?: (id: string) => void
+  closing?: boolean
 }) {
   const priceDiff = pos.direction === 'long'
     ? markPrice - pos.entry_price
@@ -78,7 +81,10 @@ function LivePositionRow({
     : `${Math.floor(durationMs / 86_400_000)}d`
 
   return (
-    <div className="grid grid-cols-8 px-3 py-2 text-xs border-b border-border/20 hover:bg-muted/20 min-w-[720px] transition-colors group">
+    <div className={cn(
+      'grid grid-cols-8 px-3 py-2 text-xs border-b border-border/20 min-w-[720px] transition-colors group',
+      closing ? 'opacity-50 pointer-events-none' : 'hover:bg-muted/20'
+    )}>
       <span className="font-semibold">{pos.symbol}</span>
       <Badge variant={pos.direction as 'long' | 'short'} className="text-[10px] px-1.5 py-0 h-4 w-fit">
         {pos.direction}
@@ -99,14 +105,17 @@ function LivePositionRow({
       </span>
       <div className="flex items-center justify-between">
         <span className="text-muted-foreground/60">{durationStr}</span>
-        {onClose && (
+        {closing ? (
+          <div className="size-3 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+        ) : onClose ? (
           <button
             onClick={() => onClose(pos.id)}
+            title="Close position at market"
             className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-loss/20 hover:text-loss text-muted-foreground transition-all"
           >
             <X className="size-3" />
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   )
@@ -149,8 +158,36 @@ function EmptyState({ message, sub }: { message: string; sub: string }) {
 export function BottomPanel({ accountId }: BottomPanelProps) {
   const [activeTab, setActiveTab] = useState<BottomTab>('positions')
   const [collapsed, setCollapsed] = useState(false)
+  const [closingId, setClosingId] = useState<string | null>(null)
 
+  const { mutate } = useSWRConfig()
   const { data: tradingData } = useTradingData(accountId)
+
+  const handleClose = useCallback(async (positionId: string) => {
+    if (closingId) return  // prevent double-click
+    setClosingId(positionId)
+    try {
+      const res = await fetch('/api/proxy/engine/close-position', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position_id: positionId }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => null)
+        console.error('[close-position]', err?.error ?? res.status)
+      }
+    } catch (e) {
+      console.error('[close-position]', e)
+    } finally {
+      setClosingId(null)
+      // Invalidate all position-related caches
+      mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+      mutate('/api/proxy/actions/accounts')
+    }
+  }, [accountId, closingId, mutate])
 
   const account = tradingData?.account
   const prices = tradingData?.prices ?? {}
@@ -260,6 +297,8 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
                       key={pos.id}
                       pos={pos}
                       markPrice={prices[pos.symbol] ?? pos.entry_price}
+                      onClose={closingId === pos.id ? undefined : handleClose}
+                      closing={closingId === pos.id}
                     />
                   ))}
                 </div>

@@ -6,9 +6,18 @@ import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
 import { BottomPanel } from '@/components/trading/bottom-panel'
+import { useAccounts } from '@/lib/hooks'
+
+// Fallback used only in mock / dev mode (no Supabase configured)
+const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 
 export default function TradePage() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTC-USD')
+
+  // Use the first active account from the session.
+  // Falls back to the mock ID so the app still works without Supabase.
+  const { data: accounts } = useAccounts()
+  const accountId = accounts?.[0]?.id ?? MOCK_ACCOUNT_ID
 
   return (
     <div className="h-full w-full overflow-hidden p-2 max-sm:hidden">
@@ -27,7 +36,7 @@ export default function TradePage() {
 
             {/* Bottom: Positions/Orders/History (32%) */}
             <ResizablePanel defaultSize="32%" minSize="18%">
-              <BottomPanel accountId="f2538dee-cfb0-422a-bf7b-c6b247145b3a" />
+              <BottomPanel accountId={accountId} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>
@@ -48,7 +57,7 @@ export default function TradePage() {
             <div className="shrink-0 border-t border-border/50">
               <OrderFormPanel
                 symbol={selectedSymbol}
-                accountId="f2538dee-cfb0-422a-bf7b-c6b247145b3a"
+                accountId={accountId}
               />
             </div>
           </div>

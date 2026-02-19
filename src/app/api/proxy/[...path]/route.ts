@@ -492,90 +492,346 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
 
     const admin = createSupabaseAdminClient()
 
-    // Validate account ownership
+    // Validate account ownership (anon client → RLS ensures it belongs to session user)
     const { data: account } = await supabase
-      .from('accounts').select('id, user_id, is_active').eq('id', body.account_id).single()
+      .from('accounts')
+      .select('id, user_id, is_active, available_margin')
+      .eq('id', body.account_id)
+      .single()
     if (!account || !account.is_active) {
       return NextResponse.json({ error: 'Account not found or inactive' }, { status: 404 })
     }
 
-    // Get current price from price_cache
+    // Get current price + instrument details from price_cache + instruments
     const { data: priceRow } = await admin
-      .from('price_cache').select('current_price').eq('symbol', body.symbol).single()
+      .from('price_cache')
+      .select('current_price, current_bid, current_ask, mark_price')
+      .eq('symbol', body.symbol)
+      .single()
+
+    const { data: instrument } = await admin
+      .from('instruments')
+      .select('price_decimals, qty_decimals, max_leverage, min_order_size, margin_requirement')
+      .eq('symbol', body.symbol)
+      .single()
+
     const execPrice = body.order_type === 'market'
-      ? (priceRow?.current_price ?? (body.price as number ?? 0))
+      ? (body.direction === 'long'
+          ? (priceRow?.current_ask ?? priceRow?.current_price ?? (body.price as number ?? 0))
+          : (priceRow?.current_bid ?? priceRow?.current_price ?? (body.price as number ?? 0)))
       : (body.price as number ?? 0)
 
-    if (body.order_type === 'market') {
-      const qty = body.quantity as number
-      const lev = body.leverage as number ?? 1
-      const fee = execPrice * qty * 0.0007
+    if (execPrice === 0) {
+      return NextResponse.json({ error: 'No price available for this symbol' }, { status: 422 })
+    }
 
+    const qty  = Number(body.quantity)
+    const lev  = Math.min(Number(body.leverage ?? 1), instrument?.max_leverage ?? 100)
+    const notional = execPrice * qty
+    const margin   = notional / lev
+    const fee      = notional * 0.0007  // 0.07% taker fee
+
+    // Margin check
+    if (margin > Number(account.available_margin)) {
+      return NextResponse.json({
+        error: `Insufficient margin — need $${margin.toFixed(2)}, available $${Number(account.available_margin).toFixed(2)}`
+      }, { status: 422 })
+    }
+
+    // Liquidation price (simplified: entry ± (100/lev)%)
+    const liqPct = 1 / lev
+    const liquidation_price = body.direction === 'long'
+      ? execPrice * (1 - liqPct)
+      : execPrice * (1 + liqPct)
+
+    if (body.order_type === 'market') {
+      // ── INSERT position ────────────────────────────────────────────────────
       const { data: position, error: posErr } = await admin
-        .from('positions').insert({
-          account_id:       body.account_id,
-          symbol:           body.symbol,
-          instrument_config: body.symbol,
-          instrument_price:  body.symbol,
-          direction:        body.direction,
-          quantity:         qty,
-          leverage:         lev,
-          entry_price:      execPrice,
-          entry_timestamp:  Date.now(),
-          status:           'open',
-          margin_mode:      body.margin_mode ?? 'cross',
-          isolated_margin:  (execPrice * qty) / lev,
-          trade_fees:       fee,
-          total_fees:       fee,
-        }).select().single()
+        .from('positions')
+        .insert({
+          account_id:        body.account_id,
+          symbol:            body.symbol,
+          // instrument_config / instrument_price are legacy text columns — store symbol
+          instrument_config: String(body.symbol),
+          instrument_price:  String(execPrice),
+          direction:         body.direction,
+          quantity:          qty,
+          original_quantity: qty,
+          leverage:          lev,
+          entry_price:       execPrice,
+          entry_timestamp:   Date.now(),
+          liquidation_price,
+          status:            'open',
+          margin_mode:       body.margin_mode ?? 'cross',
+          isolated_margin:   margin,
+          trade_fees:        fee,
+          total_fees:        fee,
+          // linked SL/TP will be stored as orders later
+        })
+        .select()
+        .single()
 
       if (posErr || !position) {
-        return NextResponse.json({ error: posErr?.message ?? 'Insert failed' }, { status: 500 })
+        console.error('[orders POST] position insert error:', posErr)
+        return NextResponse.json({ error: posErr?.message ?? 'Position insert failed' }, { status: 500 })
       }
 
-      // Activity record
+      // ── Deduct margin from account ─────────────────────────────────────────
+      await admin
+        .from('accounts')
+        .update({
+          available_margin:     Number(account.available_margin) - margin,
+          reserved_margin:      0,  // will be recalculated by a trigger / cron later
+          total_margin_required: margin,
+          updated_at:           new Date().toISOString(),
+        })
+        .eq('id', body.account_id)
+
+      // ── SL order ───────────────────────────────────────────────────────────
+      if (body.sl_price) {
+        await admin.from('orders').insert({
+          account_id:      body.account_id,
+          symbol:          body.symbol,
+          direction:       body.direction === 'long' ? 'short' : 'long',
+          order_type:      'stop',
+          quantity:        qty,
+          leverage:        lev,
+          price:           null,
+          stop_price:      Number(body.sl_price),
+          margin_mode:     body.margin_mode ?? 'cross',
+          status:          'pending',
+          position_id:     position.id,
+          filled_quantity: 0,
+        })
+      }
+
+      // ── TP order ───────────────────────────────────────────────────────────
+      if (body.tp_price) {
+        await admin.from('orders').insert({
+          account_id:      body.account_id,
+          symbol:          body.symbol,
+          direction:       body.direction === 'long' ? 'short' : 'long',
+          order_type:      'limit',
+          quantity:        qty,
+          leverage:        lev,
+          price:           Number(body.tp_price),
+          stop_price:      null,
+          margin_mode:     body.margin_mode ?? 'cross',
+          status:          'pending',
+          position_id:     position.id,
+          filled_quantity: 0,
+        })
+      }
+
+      // ── Activity record ────────────────────────────────────────────────────
+      const pDec = instrument?.price_decimals ?? 2
       await admin.from('activity').insert({
         account_id: body.account_id,
         type:  'position',
-        title: `${body.direction === 'long' ? 'Long' : 'Short'} ${body.symbol} opened`,
-        sub:   `${qty} @ $${execPrice.toLocaleString()} · ${lev}x`,
+        title: `${body.direction === 'long' ? '🟢 Long' : '🔴 Short'} ${body.symbol} opened`,
+        sub:   `${qty} lot${qty !== 1 ? 's' : ''} @ $${execPrice.toFixed(pDec)} · ${lev}x`,
         ts:    Date.now(),
+        pnl:   null,
       })
 
       return NextResponse.json({
-        ...position,
-        entry_timestamp: position.entry_timestamp,
-        created_at: toEpochMs(position.created_at),
-        updated_at: toEpochMs(position.updated_at),
+        id:              position.id,
+        account_id:      position.account_id,
+        symbol:          position.symbol,
+        direction:       position.direction,
+        quantity:        Number(position.quantity),
+        leverage:        Number(position.leverage),
+        entry_price:     Number(position.entry_price),
+        entry_timestamp: Number(position.entry_timestamp),
+        liquidation_price: Number(position.liquidation_price ?? liquidation_price),
+        status:          position.status,
+        margin_mode:     position.margin_mode,
+        isolated_margin: Number(position.isolated_margin),
+        trade_fees:      Number(position.trade_fees),
+        total_fees:      Number(position.total_fees),
+        realized_pnl:    0,
+        created_at:      toEpochMs(position.created_at),
+        updated_at:      toEpochMs(position.updated_at),
       }, { status: 201 })
     }
 
-    // Limit / stop order
+    // ── Limit / stop order ─────────────────────────────────────────────────────
+    if (!body.price && body.order_type !== 'market') {
+      return NextResponse.json({ error: 'Price required for limit/stop orders' }, { status: 422 })
+    }
+
     const { data: order, error: ordErr } = await admin
-      .from('orders').insert({
-        account_id:  body.account_id,
-        symbol:      body.symbol,
-        direction:   body.direction,
-        order_type:  body.order_type,
-        quantity:    body.quantity,
-        leverage:    body.leverage ?? 1,
-        price:       body.price ?? null,
-        stop_price:  body.stop_price ?? null,
-        sl_price:    body.sl_price ?? null,
-        tp_price:    body.tp_price ?? null,
-        margin_mode: body.margin_mode ?? 'cross',
-        status:      'pending',
+      .from('orders')
+      .insert({
+        account_id:      body.account_id,
+        symbol:          body.symbol,
+        direction:       body.direction,
+        order_type:      body.order_type,
+        quantity:        qty,
+        leverage:        lev,
+        price:           body.order_type === 'limit' ? (body.price ?? null) : null,
+        stop_price:      body.order_type === 'stop'  ? (body.price ?? null) : null,
+        sl_price:        body.sl_price ?? null,
+        tp_price:        body.tp_price ?? null,
+        margin_mode:     body.margin_mode ?? 'cross',
+        status:          'pending',
         filled_quantity: 0,
-      }).select().single()
+      })
+      .select()
+      .single()
 
     if (ordErr || !order) {
-      return NextResponse.json({ error: ordErr?.message ?? 'Insert failed' }, { status: 500 })
+      console.error('[orders POST] order insert error:', ordErr)
+      return NextResponse.json({ error: ordErr?.message ?? 'Order insert failed' }, { status: 500 })
     }
+
+    // Activity
+    await admin.from('activity').insert({
+      account_id: body.account_id,
+      type:  'order',
+      title: `${body.order_type === 'limit' ? 'Limit' : 'Stop'} ${body.direction} ${body.symbol}`,
+      sub:   `${qty} @ $${Number(body.price).toFixed(instrument?.price_decimals ?? 2)} · ${lev}x`,
+      ts:    Date.now(),
+      pnl:   null,
+    })
+
     return NextResponse.json({
-      ...order,
-      created_at: toEpochMs(order.created_at),
-      updated_at: toEpochMs(order.updated_at),
+      id:              order.id,
+      account_id:      order.account_id,
+      symbol:          order.symbol,
+      direction:       order.direction,
+      order_type:      order.order_type,
+      quantity:        Number(order.quantity),
+      leverage:        Number(order.leverage),
+      price:           order.price ? Number(order.price) : null,
+      stop_price:      order.stop_price ? Number(order.stop_price) : null,
+      sl_price:        order.sl_price ? Number(order.sl_price) : null,
+      tp_price:        order.tp_price ? Number(order.tp_price) : null,
+      status:          order.status,
+      margin_mode:     order.margin_mode,
+      filled_quantity: 0,
+      position_id:     null,
+      created_at:      toEpochMs(order.created_at),
+      updated_at:      toEpochMs(order.updated_at),
     }, { status: 201 })
+  }
+
+  // ── engine/close-position ─────────────────────────────────────────────────
+  if (apiPath === 'engine/close-position') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const supabase = await createSupabaseServerClient()
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const admin = createSupabaseAdminClient()
+    const positionId = body.position_id as string
+
+    // Verify ownership via RLS-scoped anon client
+    const { data: pos } = await supabase
+      .from('positions')
+      .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
+      .eq('id', positionId)
+      .eq('status', 'open')
+      .single()
+
+    if (!pos) {
+      return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
+    }
+
+    // Get exit price from price_cache
+    const { data: priceRow } = await admin
+      .from('price_cache')
+      .select('current_price, current_bid, current_ask')
+      .eq('symbol', pos.symbol)
+      .single()
+
+    // Close at bid if long (selling), ask if short (buying back)
+    const exitPrice = pos.direction === 'long'
+      ? (priceRow?.current_bid ?? priceRow?.current_price ?? Number(pos.entry_price))
+      : (priceRow?.current_ask ?? priceRow?.current_price ?? Number(pos.entry_price))
+
+    const priceDiff  = pos.direction === 'long'
+      ? exitPrice - Number(pos.entry_price)
+      : Number(pos.entry_price) - exitPrice
+    const realizedPnl = priceDiff * Number(pos.quantity) * Number(pos.leverage)
+    const closeFee    = exitPrice * Number(pos.quantity) * 0.0007
+
+    const now = Date.now()
+
+    // Close the position
+    const { error: closeErr } = await admin
+      .from('positions')
+      .update({
+        status:       'closed',
+        close_reason: 'manual',
+        exit_price:   exitPrice,
+        exit_timestamp: now,
+        realized_pnl: realizedPnl,
+        total_fees:   Number(pos.trade_fees) + closeFee,
+        updated_at:   new Date().toISOString(),
+      })
+      .eq('id', positionId)
+
+    if (closeErr) {
+      return NextResponse.json({ error: closeErr.message }, { status: 500 })
+    }
+
+    // Cancel any linked SL/TP orders
+    await admin
+      .from('orders')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('position_id', positionId)
+      .in('status', ['pending', 'partial'])
+
+    // Release margin back to account
+    const { data: acct } = await admin
+      .from('accounts')
+      .select('available_margin, realized_pnl')
+      .eq('id', pos.account_id)
+      .single()
+
+    if (acct) {
+      await admin
+        .from('accounts')
+        .update({
+          available_margin: Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee,
+          realized_pnl:     Number(acct.realized_pnl) + realizedPnl,
+          updated_at:       new Date().toISOString(),
+        })
+        .eq('id', pos.account_id)
+    }
+
+    // Equity history snapshot
+    if (acct) {
+      await admin.from('equity_history').insert({
+        account_id: pos.account_id,
+        ts:         now,
+        equity:     Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee,
+        pnl:        realizedPnl,
+      })
+    }
+
+    // Activity record
+    const { data: instr } = await admin
+      .from('instruments').select('price_decimals').eq('symbol', pos.symbol).single()
+    const pDec = instr?.price_decimals ?? 2
+    const pnlStr = realizedPnl >= 0 ? `+$${realizedPnl.toFixed(2)}` : `-$${Math.abs(realizedPnl).toFixed(2)}`
+    await admin.from('activity').insert({
+      account_id: pos.account_id,
+      type:  'closed',
+      title: `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} closed`,
+      sub:   `${Number(pos.quantity)} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
+      ts:    now,
+      pnl:   realizedPnl,
+    })
+
+    return NextResponse.json({
+      success:       true,
+      position_id:   positionId,
+      exit_price:    exitPrice,
+      realized_pnl:  realizedPnl,
+      close_fee:     closeFee,
+    })
   }
 
   return null
@@ -816,6 +1072,19 @@ async function handler(
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     return NextResponse.json({ id: orderId, account_id: body.account_id, symbol: body.symbol, direction: body.direction, order_type: body.order_type, quantity: body.quantity, leverage: body.leverage, margin_mode: body.margin_mode ?? 'cross', price: body.price ?? null, sl_price: body.sl_price ?? null, tp_price: body.tp_price ?? null, status: body.order_type === 'market' ? 'filled' : 'open', filled_quantity: body.order_type === 'market' ? body.quantity : 0, created_at: Date.now(), updated_at: Date.now() }, { status: 201 })
+  }
+
+  if (req.method === 'POST' && apiPath === 'engine/close-position') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    // Mock: simulate a close with a random small P&L
+    const mockPnl = (Math.random() - 0.45) * 200
+    return NextResponse.json({
+      success:      true,
+      position_id:  body.position_id,
+      exit_price:   body.exit_price ?? 0,
+      realized_pnl: mockPnl,
+      close_fee:    0.5,
+    })
   }
 
   const data = getMockData(apiPath, req)
