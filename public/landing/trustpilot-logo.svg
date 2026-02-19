@@ -1,0 +1,5 @@
+<svg viewBox="0 0 280 50" xmlns="http://www.w3.org/2000/svg">
+  <path d="M25 1.5l7.7 15.6 17.3 2.5-12.5 12.2 3 17.2L25 40.8 8.5 49l3-17.2L-1 19.6l17.3-2.5L25 1.5z" fill="#00B67A"/>
+  <path d="M35.3 35.8L33 24.5 25 40.8l10.3-5z" fill="#005128"/>
+  <text x="55" y="37" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="700" fill="currentColor">Trustpilot</text>
+</svg>
