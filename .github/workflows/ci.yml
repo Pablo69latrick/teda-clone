@@ -1,0 +1,46 @@
+name: CI — Build & Type Check
+
+on:
+  push:
+    branches: [main, lovable]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_APP_URL: https://teda.vercel.app
+
+      - name: Check for protected file modifications (Lovable PRs)
+        if: github.head_ref != '' && contains(github.head_ref, 'lovable')
+        run: |
+          echo "🔍 Checking Lovable PR doesn't touch protected backend files..."
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+          VIOLATIONS=$(echo "$CHANGED" | grep -E '^(src/app/api/|src/lib/|prisma/|src/middleware\.|next\.config\.|tailwind\.config\.|\.env)' || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "❌ Lovable PR is touching protected backend files:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "✅ No protected files modified"

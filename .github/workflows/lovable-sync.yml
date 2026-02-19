@@ -1,0 +1,54 @@
+name: Lovable → Auto PR
+
+on:
+  push:
+    branches: [lovable]
+
+jobs:
+  create-pr:
+    name: Create PR to main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if PR already exists
+        id: check_pr
+        run: |
+          COUNT=$(gh pr list --base main --head lovable --state open --json number | jq length)
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create PR if needed
+        if: steps.check_pr.outputs.count == '0'
+        run: |
+          gh pr create \
+            --base main \
+            --head lovable \
+            --title "🎨 Lovable UI Update — $(date +'%Y-%m-%d')" \
+            --body "## 🎨 Lovable UI Update
+
+          > PR auto-créée par GitHub Actions suite à un push sur \`lovable\`.
+
+          ### Checklist avant merge
+          - [ ] Aucun fichier backend modifié (\`src/app/api/**\`, \`src/lib/**\`, \`prisma/**\`)
+          - [ ] Build OK
+          - [ ] Design cohérent avec le système TEDA
+          - [ ] Screenshots ajoutés si changement visuel significatif
+
+          **→ Reviewer : vérifier le CI avant de merger**" \
+            --label "ui,lovable"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update existing PR
+        if: steps.check_pr.outputs.count != '0'
+        run: |
+          echo "✅ PR already exists between lovable → main, CI will re-run automatically."
