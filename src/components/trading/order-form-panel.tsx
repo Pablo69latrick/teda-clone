@@ -319,6 +319,7 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
       <div className="grid grid-cols-7 gap-1 p-2">
         <Button
           variant="short"
+          data-action="short"
           onClick={() => handlePlaceOrder('short')}
           disabled={qty === 0 || submitting || (orderType !== 'market' && !limitPrice)}
           className="col-span-3 h-10 text-sm font-semibold"
@@ -335,6 +336,7 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
         </div>
         <Button
           variant="long"
+          data-action="long"
           onClick={() => handlePlaceOrder('long')}
           disabled={qty === 0 || submitting || (orderType !== 'market' && !limitPrice)}
           className="col-span-3 h-10 text-sm font-semibold"

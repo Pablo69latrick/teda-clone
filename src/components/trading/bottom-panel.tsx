@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronUp, X, Minus, Plus, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -280,7 +281,7 @@ function LivePositionRow({
                 <button
                   onClick={() => onPartialClose(pos)}
                   title="Partial close"
-                  className="opacity-0 group-hover:opacity-100 px-1.5 py-0.5 rounded text-[9px] font-medium border border-border/50 text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
+                  className="px-1.5 py-0.5 rounded text-[9px] font-medium border border-border/50 text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
                 >
                   Partial
                 </button>
@@ -289,7 +290,7 @@ function LivePositionRow({
                 <button
                   onClick={() => onClose(pos.id)}
                   title="Close position at market"
-                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-loss/20 hover:text-loss text-muted-foreground transition-all"
+                  className="p-0.5 rounded hover:bg-loss/20 hover:text-loss text-muted-foreground transition-all"
                 >
                   <X className="size-3" />
                 </button>
@@ -372,7 +373,7 @@ function OrderRow({
       ) : (
         <button
           onClick={() => onCancel(order.id)}
-          className="opacity-0 group-hover:opacity-100 flex items-center justify-end text-muted-foreground hover:text-loss transition-all"
+          className="flex items-center justify-end text-muted-foreground hover:text-loss transition-all"
           title="Cancel order"
         >
           <X className="size-3" />
@@ -567,15 +568,16 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
 
   return (
     <>
-      {/* Partial close modal (portal-like, rendered outside the panel flow) */}
-      {partialPos && (
+      {/* Partial close modal — rendered in document.body via portal to escape ResizablePanel stacking context */}
+      {partialPos && typeof document !== 'undefined' && createPortal(
         <PartialCloseModal
           pos={partialPos}
           markPrice={prices[partialPos.symbol] ?? partialPos.entry_price}
           onClose={() => setPartialPos(null)}
           onConfirm={(qty) => handlePartialClose(partialPos, qty)}
           loading={partialLoading}
-        />
+        />,
+        document.body
       )}
 
       <div className="flex flex-col h-full bg-card border-t border-border/50 overflow-hidden">

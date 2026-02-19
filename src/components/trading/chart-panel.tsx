@@ -7,16 +7,22 @@ import {
   CrosshairMode,
   CandlestickSeries,
   HistogramSeries,
+  LineStyle,
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
   type Time,
+  type IPriceLine,
 } from 'lightweight-charts'
 import { cn } from '@/lib/utils'
-import { useCandles } from '@/lib/hooks'
+import { useCandles, useTradingData } from '@/lib/hooks'
+import { Maximize2, Minimize2 } from 'lucide-react'
 
 interface ChartPanelProps {
   symbol: string
+  accountId?: string
+  onFullscreen?: () => void
+  isFullscreen?: boolean
 }
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'] as const
@@ -27,7 +33,7 @@ interface BarInfo {
   o: number; h: number; l: number; c: number; pct: number
 }
 
-export function ChartPanel({ symbol }: ChartPanelProps) {
+export function ChartPanel({ symbol, accountId, onFullscreen, isFullscreen }: ChartPanelProps) {
   const [timeframe, setTimeframe] = useState<Timeframe>('1h')
   const [barInfo, setBarInfo] = useState<BarInfo | null>(null)
 
@@ -35,8 +41,15 @@ export function ChartPanel({ symbol }: ChartPanelProps) {
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const priceLinesRef = useRef<Map<string, IPriceLine>>(new Map())
 
   const { data: candles } = useCandles(symbol, timeframe)
+  const { data: tradingData } = useTradingData(accountId)
+
+  // Open positions for the current symbol
+  const openPositionsForSymbol = (tradingData?.positions ?? []).filter(
+    p => p.status === 'open' && p.symbol === symbol
+  )
 
   // ── Create chart on mount ─────────────────────────────────────────────────
   useEffect(() => {
@@ -153,6 +166,33 @@ export function ChartPanel({ symbol }: ChartPanelProps) {
     chartRef.current?.timeScale().fitContent()
   }, [candles])
 
+  // ── Position price lines ──────────────────────────────────────────────────
+  useEffect(() => {
+    const series = candleSeriesRef.current
+    if (!series) return
+
+    // Remove all existing price lines
+    priceLinesRef.current.forEach(line => {
+      try { series.removePriceLine(line) } catch { /* series may have been destroyed */ }
+    })
+    priceLinesRef.current.clear()
+
+    // Add a dashed line for each open position on this symbol
+    openPositionsForSymbol.forEach(pos => {
+      const isLong = pos.direction === 'long'
+      const line = series.createPriceLine({
+        price: pos.entry_price,
+        color: isLong ? 'rgba(34,197,94,0.85)' : 'rgba(239,68,68,0.85)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `${isLong ? '▲' : '▼'} ${pos.quantity}×${pos.leverage}`,
+      })
+      priceLinesRef.current.set(pos.id, line)
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPositionsForSymbol.map(p => `${p.id}:${p.entry_price}`).join(',')])
+
   // Latest close for the last bar display
   const latestCandle = candles?.[candles.length - 1]
   const latestClose = latestCandle?.close ?? 0
@@ -229,6 +269,18 @@ export function ChartPanel({ symbol }: ChartPanelProps) {
         <div className="ml-auto flex items-center gap-2 text-[10px] text-zinc-500">
           <span className="hidden xl:inline">Indicators</span>
           <div className="w-1.5 h-1.5 rounded-full bg-green-500" title="Live" />
+          {onFullscreen && (
+            <button
+              onClick={onFullscreen}
+              title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen (F)'}
+              className="p-1 rounded hover:bg-white/10 hover:text-zinc-300 transition-colors"
+            >
+              {isFullscreen
+                ? <Minimize2 className="size-3.5" />
+                : <Maximize2 className="size-3.5" />
+              }
+            </button>
+          )}
         </div>
       </div>
 
