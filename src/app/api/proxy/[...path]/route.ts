@@ -595,115 +595,43 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
       : execPrice * (1 + liqPct)
 
     if (body.order_type === 'market') {
-      // ── INSERT position ────────────────────────────────────────────────────
-      const { data: position, error: posErr } = await admin
-        .from('positions')
-        .insert({
-          account_id:        body.account_id,
-          symbol:            body.symbol,
-          // instrument_config / instrument_price are legacy text columns — store symbol
-          instrument_config: String(body.symbol),
-          instrument_price:  String(execPrice),
-          direction:         body.direction,
-          quantity:          qty,
-          original_quantity: qty,
-          leverage:          lev,
-          entry_price:       execPrice,
-          entry_timestamp:   Date.now(),
-          liquidation_price,
-          status:            'open',
-          margin_mode:       body.margin_mode ?? 'cross',
-          isolated_margin:   margin,
-          trade_fees:        fee,
-          total_fees:        fee,
-          // linked SL/TP will be stored as orders later
-        })
-        .select()
-        .single()
+      // ── C-06: Atomic market order via Postgres RPC ────────────────────────
+      // place_market_order() acquires a FOR UPDATE lock on the accounts row,
+      // checks margin, inserts the position, deducts margin, and creates
+      // SL/TP orders — all in a single transaction.  No race condition.
+      const { data: rpcResult, error: rpcErr } = await admin.rpc('place_market_order', {
+        p_account_id:        body.account_id,
+        p_user_id:           user.id,
+        p_symbol:            body.symbol,
+        p_direction:         body.direction,
+        p_margin_mode:       body.margin_mode ?? 'cross',
+        p_quantity:          qty,
+        p_leverage:          lev,
+        p_exec_price:        execPrice,
+        p_margin:            margin,
+        p_fee:               fee,
+        p_liquidation_price: liquidation_price,
+        p_instrument_config: String(body.symbol),
+        p_instrument_price:  String(execPrice),
+        p_sl_price:          body.sl_price ? Number(body.sl_price) : null,
+        p_tp_price:          body.tp_price ? Number(body.tp_price) : null,
+      })
 
-      if (posErr || !position) {
-        // H-05: log full error server-side, return generic message to client
-        console.error('[orders POST] position insert error:', posErr)
+      if (rpcErr || !rpcResult) {
+        console.error('[orders POST] place_market_order RPC error:', rpcErr)
+        // Map known DB exceptions to meaningful HTTP responses
+        const hint = rpcErr?.hint ?? rpcErr?.message ?? ''
+        if (hint.includes('insufficient_margin')) {
+          return NextResponse.json({ error: 'Insufficient margin for this order' }, { status: 422 })
+        }
+        if (hint.includes('account_not_found')) {
+          return NextResponse.json({ error: 'Account not found or inactive' }, { status: 404 })
+        }
         return NextResponse.json({ error: 'Failed to open position. Please try again.' }, { status: 500 })
       }
 
-      // ── Deduct margin from account ─────────────────────────────────────────
-      await admin
-        .from('accounts')
-        .update({
-          available_margin:     Number(account.available_margin) - margin,
-          reserved_margin:      0,  // will be recalculated by a trigger / cron later
-          total_margin_required: margin,
-          updated_at:           new Date().toISOString(),
-        })
-        .eq('id', body.account_id)
-
-      // ── SL order ───────────────────────────────────────────────────────────
-      if (body.sl_price) {
-        await admin.from('orders').insert({
-          account_id:      body.account_id,
-          symbol:          body.symbol,
-          direction:       body.direction === 'long' ? 'short' : 'long',
-          order_type:      'stop',
-          quantity:        qty,
-          leverage:        lev,
-          price:           null,
-          stop_price:      Number(body.sl_price),
-          margin_mode:     body.margin_mode ?? 'cross',
-          status:          'pending',
-          position_id:     position.id,
-          filled_quantity: 0,
-        })
-      }
-
-      // ── TP order ───────────────────────────────────────────────────────────
-      if (body.tp_price) {
-        await admin.from('orders').insert({
-          account_id:      body.account_id,
-          symbol:          body.symbol,
-          direction:       body.direction === 'long' ? 'short' : 'long',
-          order_type:      'limit',
-          quantity:        qty,
-          leverage:        lev,
-          price:           Number(body.tp_price),
-          stop_price:      null,
-          margin_mode:     body.margin_mode ?? 'cross',
-          status:          'pending',
-          position_id:     position.id,
-          filled_quantity: 0,
-        })
-      }
-
-      // ── Activity record ────────────────────────────────────────────────────
-      const pDec = instrument?.price_decimals ?? 2
-      await admin.from('activity').insert({
-        account_id: body.account_id,
-        type:  'position',
-        title: `${body.direction === 'long' ? '🟢 Long' : '🔴 Short'} ${body.symbol} opened`,
-        sub:   `${qty} lot${qty !== 1 ? 's' : ''} @ $${execPrice.toFixed(pDec)} · ${lev}x`,
-        ts:    Date.now(),
-        pnl:   null,
-      })
-
-      return NextResponse.json({
-        id:              position.id,
-        account_id:      position.account_id,
-        symbol:          position.symbol,
-        direction:       position.direction,
-        quantity:        Number(position.quantity),
-        leverage:        Number(position.leverage),
-        entry_price:     Number(position.entry_price),
-        entry_timestamp: Number(position.entry_timestamp),
-        liquidation_price: Number(position.liquidation_price ?? liquidation_price),
-        status:          position.status,
-        margin_mode:     position.margin_mode,
-        isolated_margin: Number(position.isolated_margin),
-        trade_fees:      Number(position.trade_fees),
-        total_fees:      Number(position.total_fees),
-        realized_pnl:    0,
-        created_at:      toEpochMs(position.created_at),
-        updated_at:      toEpochMs(position.updated_at),
-      }, { status: 201 })
+      // RPC returns the position as JSON — pass it through with status 201
+      return NextResponse.json({ ...rpcResult, status: 'filled' }, { status: 201 })
     }
 
     // ── Limit / stop order ─────────────────────────────────────────────────────
