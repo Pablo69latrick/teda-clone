@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server'
 import { createSupabaseAdminClient } from '@/lib/supabase/server'
 
 // ─── Instrument maps ──────────────────────────────────────────────────────────
@@ -39,7 +39,19 @@ type PriceRow = {
 // Called by Vercel cron every minute (vercel.json) or manually in dev.
 // Fetches live prices from CoinGecko (crypto) and Twelve Data (forex),
 // then upserts into the price_cache table.
-export async function GET() {
+//
+// C-05: Protected by CRON_SECRET bearer token.
+// Add CRON_SECRET=<random-string> to your env vars and to vercel.json:
+//   "headers": [{ "Authorization": "Bearer $CRON_SECRET" }]
+// For local dev without the secret set, the endpoint is open (NODE_ENV check).
+export async function GET(req: NextRequest) {
+  const cronSecret = process.env.CRON_SECRET
+  if (cronSecret) {
+    const authHeader = req.headers.get('authorization')
+    if (authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+  }
   const now = Date.now()
   const rows: PriceRow[] = []
   const errors: string[] = []

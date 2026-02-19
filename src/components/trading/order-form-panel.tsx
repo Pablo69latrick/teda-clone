@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useSWRConfig } from 'swr'
 import { ChevronDown, Info, CheckCircle, XCircle } from 'lucide-react'
 import { cn, formatCurrency, calcRequiredMargin } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,7 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
 
+  const { mutate } = useSWRConfig()
   const { data: instruments } = useInstruments()
 
   // Find the current instrument matching the selected symbol
@@ -90,6 +92,19 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
         ? `${side.toUpperCase()} ${qty} ${symbol} filled @ market`
         : `${side.toUpperCase()} ${qty} ${symbol} order placed`
       showToast('success', filledMsg)
+
+      // UX #5: Immediately invalidate SWR caches so positions/account update
+      // without waiting for the next 2s poll
+      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
+      mutate('/api/proxy/actions/accounts')
+      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+
+      // UX #6: Reset form fields after successful order
+      setQuantity('0.00')
+      setLimitPrice('')
+      setSlPrice('')
+      setTpPrice('')
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : 'Order failed')
     } finally {

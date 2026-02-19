@@ -53,31 +53,38 @@ async function handleSupabase(req: NextRequest, apiPath: string): Promise<NextRe
   // ── auth/get-session ──────────────────────────────────────────────────────
   if (apiPath === 'auth/get-session') {
     const supabase = await createSupabaseServerClient()
+    // C-M05: use getUser() to validate the JWT with the Supabase Auth server
+    // (getSession() reads from cookie without revalidating — revoked sessions stay valid)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ session: null, user: null }, { status: 401 })
+
+    // Keep getSession only to get expires_at / created_at metadata (no auth decision here)
     const { data: { session } } = await supabase.auth.getSession()
-    if (!session) return NextResponse.json({ session: null, user: null }, { status: 401 })
 
     const { data: profile } = await supabase
-      .from('profiles').select('*').eq('id', session.user.id).single()
+      .from('profiles').select('*').eq('id', user.id).single()
 
     if (!profile) return NextResponse.json({ session: null, user: null }, { status: 401 })
 
     return NextResponse.json({
       session: {
-        id: session.user.id,
-        token: session.access_token,
-        expiresAt: session.expires_at,
-        createdAt: session.user.created_at,
+        id: user.id,
+        // C-07: never expose the raw access_token in the response body
+        // Token management is handled exclusively by Supabase httpOnly cookies
+        token: undefined,
+        expiresAt: session?.expires_at,
+        createdAt: user.created_at,
         updatedAt: profile.updated_at,
         ipAddress: '',
         userAgent: '',
-        userId: session.user.id,
+        userId: user.id,
         impersonatedBy: null,
       },
       user: {
         id: profile.id,
         name: profile.name,
         email: profile.email,
-        emailVerified: !!session.user.email_confirmed_at,
+        emailVerified: !!user.email_confirmed_at,
         image: profile.image_url ?? null,
         role: profile.role,
         banned: profile.banned,
@@ -487,12 +494,42 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
   if (apiPath === 'engine/orders') {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // M-05: use getUser() to revalidate JWT server-side
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // ── C-03/C-04: Strict server-side input validation ─────────────────────
+    const VALID_DIRECTIONS  = ['long', 'short'] as const
+    const VALID_ORDER_TYPES = ['market', 'limit', 'stop', 'stop_limit'] as const
+
+    if (!body.account_id || typeof body.account_id !== 'string') {
+      return NextResponse.json({ error: 'Invalid account' }, { status: 400 })
+    }
+    if (!body.symbol || typeof body.symbol !== 'string') {
+      return NextResponse.json({ error: 'Invalid symbol' }, { status: 400 })
+    }
+    if (!VALID_DIRECTIONS.includes(body.direction as typeof VALID_DIRECTIONS[number])) {
+      return NextResponse.json({ error: 'direction must be long or short' }, { status: 400 })
+    }
+    if (!VALID_ORDER_TYPES.includes(body.order_type as typeof VALID_ORDER_TYPES[number])) {
+      return NextResponse.json({ error: 'Invalid order type' }, { status: 400 })
+    }
+
+    const qty = Number(body.quantity)
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return NextResponse.json({ error: 'quantity must be a positive number' }, { status: 400 })
+    }
+
+    const rawLev = Number(body.leverage ?? 1)
+    if (!Number.isFinite(rawLev) || rawLev < 1) {
+      return NextResponse.json({ error: 'leverage must be ≥ 1' }, { status: 400 })
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     const admin = createSupabaseAdminClient()
 
-    // Validate account ownership (anon client → RLS ensures it belongs to session user)
+    // C-01: Validate account ownership — explicit user_id check so the admin
+    // client writes below cannot be hijacked even if RLS is misconfigured.
     const { data: account } = await supabase
       .from('accounts')
       .select('id, user_id, is_active, available_margin')
@@ -501,17 +538,36 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
     if (!account || !account.is_active) {
       return NextResponse.json({ error: 'Account not found or inactive' }, { status: 404 })
     }
+    // Explicit app-level ownership guard (belt-and-suspenders on top of RLS)
+    if (account.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
 
-    // Get current price + instrument details from price_cache + instruments
-    const { data: priceRow } = await admin
-      .from('price_cache')
-      .select('current_price, current_bid, current_ask, mark_price')
-      .eq('symbol', body.symbol)
-      .single()
-
+    // Verify symbol exists in instruments table
     const { data: instrument } = await admin
       .from('instruments')
       .select('price_decimals, qty_decimals, max_leverage, min_order_size, margin_requirement')
+      .eq('symbol', body.symbol)
+      .eq('is_active', true)
+      .single()
+    if (!instrument) {
+      return NextResponse.json({ error: 'Unknown or inactive symbol' }, { status: 400 })
+    }
+
+    // Clamp leverage to instrument max (lower bound already validated above)
+    const lev = Math.max(1, Math.min(rawLev, instrument.max_leverage ?? 100))
+
+    // Validate against instrument min_order_size
+    if (qty < (instrument.min_order_size ?? 0)) {
+      return NextResponse.json({
+        error: `Minimum order size is ${instrument.min_order_size}`
+      }, { status: 400 })
+    }
+
+    // Get current price from price_cache
+    const { data: priceRow } = await admin
+      .from('price_cache')
+      .select('current_price, current_bid, current_ask, mark_price')
       .eq('symbol', body.symbol)
       .single()
 
@@ -521,21 +577,22 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
           : (priceRow?.current_bid ?? priceRow?.current_price ?? (body.price as number ?? 0)))
       : (body.price as number ?? 0)
 
-    if (execPrice === 0) {
+    if (!Number.isFinite(execPrice) || execPrice <= 0) {
       return NextResponse.json({ error: 'No price available for this symbol' }, { status: 422 })
     }
 
-    const qty  = Number(body.quantity)
-    const lev  = Math.min(Number(body.leverage ?? 1), instrument?.max_leverage ?? 100)
     const notional = execPrice * qty
     const margin   = notional / lev
     const fee      = notional * 0.0007  // 0.07% taker fee
 
-    // Margin check
+    // Overflow guard (belt-and-suspenders after finite checks)
+    if (!Number.isFinite(notional) || !Number.isFinite(margin)) {
+      return NextResponse.json({ error: 'Order size too large' }, { status: 400 })
+    }
+
+    // Margin check — generic message to avoid leaking exact balance (H-05)
     if (margin > Number(account.available_margin)) {
-      return NextResponse.json({
-        error: `Insufficient margin — need $${margin.toFixed(2)}, available $${Number(account.available_margin).toFixed(2)}`
-      }, { status: 422 })
+      return NextResponse.json({ error: 'Insufficient margin for this order' }, { status: 422 })
     }
 
     // Liquidation price (simplified: entry ± (100/lev)%)
@@ -572,8 +629,9 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
         .single()
 
       if (posErr || !position) {
+        // H-05: log full error server-side, return generic message to client
         console.error('[orders POST] position insert error:', posErr)
-        return NextResponse.json({ error: posErr?.message ?? 'Position insert failed' }, { status: 500 })
+        return NextResponse.json({ error: 'Failed to open position. Please try again.' }, { status: 500 })
       }
 
       // ── Deduct margin from account ─────────────────────────────────────────
@@ -681,8 +739,9 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
       .single()
 
     if (ordErr || !order) {
+      // H-05: log full error server-side, return generic message to client
       console.error('[orders POST] order insert error:', ordErr)
-      return NextResponse.json({ error: ordErr?.message ?? 'Order insert failed' }, { status: 500 })
+      return NextResponse.json({ error: 'Failed to place order. Please try again.' }, { status: 500 })
     }
 
     // Activity
@@ -720,13 +779,19 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
   if (apiPath === 'engine/close-position') {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // M-05: use getUser() to revalidate JWT server-side
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    if (!body.position_id || typeof body.position_id !== 'string') {
+      return NextResponse.json({ error: 'Invalid position_id' }, { status: 400 })
+    }
 
     const admin = createSupabaseAdminClient()
     const positionId = body.position_id as string
 
-    // Verify ownership via RLS-scoped anon client
+    // C-02: Verify ownership via RLS (anon client scoped to session user) +
+    // then explicit app-level check that the position's account belongs to this user.
     const { data: pos } = await supabase
       .from('positions')
       .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
@@ -736,6 +801,16 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
 
     if (!pos) {
       return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
+    }
+
+    // Explicit ownership check: confirm the position's account belongs to this user
+    const { data: posAccount } = await supabase
+      .from('accounts')
+      .select('id, user_id')
+      .eq('id', pos.account_id)
+      .single()
+    if (!posAccount || posAccount.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     // Get exit price from price_cache
@@ -773,7 +848,9 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
       .eq('id', positionId)
 
     if (closeErr) {
-      return NextResponse.json({ error: closeErr.message }, { status: 500 })
+      // H-05: log full error server-side, return generic message to client
+      console.error('[close-position] update error:', closeErr)
+      return NextResponse.json({ error: 'Failed to close position. Please try again.' }, { status: 500 })
     }
 
     // Cancel any linked SL/TP orders
