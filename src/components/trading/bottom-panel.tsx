@@ -159,6 +159,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
   const [activeTab, setActiveTab] = useState<BottomTab>('positions')
   const [collapsed, setCollapsed] = useState(false)
   const [closingId, setClosingId] = useState<string | null>(null)
+  const [closeError, setCloseError] = useState<string | null>(null)
 
   const { mutate } = useSWRConfig()
   const { data: tradingData } = useTradingData(accountId)
@@ -166,6 +167,8 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
   const handleClose = useCallback(async (positionId: string) => {
     if (closingId) return  // prevent double-click
     setClosingId(positionId)
+    setCloseError(null)
+    let success = false
     try {
       const res = await fetch('/api/proxy/engine/close-position', {
         method: 'POST',
@@ -174,18 +177,27 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
         body: JSON.stringify({ position_id: positionId }),
       })
       if (!res.ok) {
-        const err = await res.json().catch(() => null)
-        console.error('[close-position]', err?.error ?? res.status)
+        const errJson = await res.json().catch(() => null)
+        const msg = errJson?.error ?? `Close failed (${res.status})`
+        setCloseError(msg)
+        console.error('[close-position]', msg)
+      } else {
+        success = true
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Network error'
+      setCloseError(msg)
       console.error('[close-position]', e)
     } finally {
       setClosingId(null)
-      // Invalidate all position-related caches
-      mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
-      mutate('/api/proxy/actions/accounts')
+      if (success) {
+        // Only invalidate on success — avoid spurious refetches on failure
+        mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/challenge-status?account_id=${accountId}`)
+        mutate('/api/proxy/actions/accounts')
+      }
     }
   }, [accountId, closingId, mutate])
 
@@ -277,6 +289,14 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
           </button>
         </div>
       </div>
+
+      {/* Error banner for close-position failures */}
+      {closeError && (
+        <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-loss/10 border-b border-loss/30 text-xs text-loss shrink-0">
+          <span className="truncate">⚠ {closeError}</span>
+          <button onClick={() => setCloseError(null)} className="shrink-0 opacity-70 hover:opacity-100">✕</button>
+        </div>
+      )}
 
       {!collapsed && (
         <div className="flex-1 overflow-y-auto custom-scrollbar">

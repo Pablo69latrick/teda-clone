@@ -14,29 +14,21 @@
  *   - accounts      → invalidates accounts + trading-data + challenge-status
  *   - activity      → invalidates activity
  *
+ * H-06: Row-level filters are applied on positions, orders, accounts, and
+ * activity so each client only receives events for their own account.
+ * price_cache has no per-account rows so it remains unfiltered.
+ *
  * The hook is a no-op when Supabase is not configured (mock / dev mode).
  */
 
 import { useEffect, useRef } from 'react'
 import { useSWRConfig } from 'swr'
-
-// ── Config detection ───────────────────────────────────────────────────────
-
-function isSupabaseConfigured(): boolean {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
-  return (
-    url.length > 0 &&
-    !url.includes('VOTRE_REF') &&
-    key.length > 0 &&
-    !key.includes('VOTRE_ANON')
-  )
-}
+import { isBrowserSupabaseConfigured } from '@/lib/supabase/config'
 
 // ── Hook ──────────────────────────────────────────────────────────────────
 
 interface UseRealtimeSyncOptions {
-  /** The active account ID — used to scope invalidation keys. */
+  /** The active account ID — used to scope invalidation keys and row filters. */
   accountId: string | undefined
 }
 
@@ -50,18 +42,26 @@ export function useRealtimeSync({ accountId }: UseRealtimeSyncOptions) {
 
   useEffect(() => {
     // No-op in mock / mis-configured mode
-    if (!isSupabaseConfigured()) return
+    if (!isBrowserSupabaseConfigured()) return
 
+    // Wait until we have an account ID to add row-level filters
+    if (!accountId) return
+
+    // H-06: Use a stable supabase instance (same ref for subscribe + cleanup)
+    // to avoid creating a second browser client just for removeChannel.
+    let supabaseInstance: import('@supabase/supabase-js').SupabaseClient | null = null
     let channel: ReturnType<import('@supabase/supabase-js').SupabaseClient['channel']> | null = null
 
     // Dynamically import the browser client to avoid SSR issues
     import('@/lib/supabase/client').then(({ createSupabaseBrowserClient }) => {
       const supabase = createSupabaseBrowserClient()
+      supabaseInstance = supabase
 
       channel = supabase
-        .channel('realtime-trading')
+        .channel(`realtime-trading-${accountId}`)
 
         // ── price_cache → refresh instruments watchlist + trading data ───────
+        // No per-account filter (price_cache has no account_id column)
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'price_cache' },
@@ -75,9 +75,10 @@ export function useRealtimeSync({ accountId }: UseRealtimeSyncOptions) {
         )
 
         // ── positions → refresh positions + trading data + activity ──────────
+        // H-06: filter to only this account's rows
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'positions' },
+          { event: '*', schema: 'public', table: 'positions', filter: `account_id=eq.${accountId}` },
           () => {
             const aid = accountIdRef.current
             if (aid) {
@@ -90,9 +91,10 @@ export function useRealtimeSync({ accountId }: UseRealtimeSyncOptions) {
         )
 
         // ── orders → refresh orders + trading data ───────────────────────────
+        // H-06: filter to only this account's rows
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'orders' },
+          { event: '*', schema: 'public', table: 'orders', filter: `account_id=eq.${accountId}` },
           () => {
             const aid = accountIdRef.current
             if (aid) {
@@ -103,9 +105,10 @@ export function useRealtimeSync({ accountId }: UseRealtimeSyncOptions) {
         )
 
         // ── accounts → refresh accounts + trading data + challenge status ────
+        // H-06: filter to only this specific account row
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'accounts' },
+          { event: '*', schema: 'public', table: 'accounts', filter: `id=eq.${accountId}` },
           () => {
             mutate('/api/proxy/actions/accounts')
             const aid = accountIdRef.current
@@ -117,9 +120,10 @@ export function useRealtimeSync({ accountId }: UseRealtimeSyncOptions) {
         )
 
         // ── activity → refresh activity feed ─────────────────────────────────
+        // H-06: filter to only this account's activity
         .on(
           'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'activity' },
+          { event: 'INSERT', schema: 'public', table: 'activity', filter: `account_id=eq.${accountId}` },
           () => {
             const aid = accountIdRef.current
             if (aid) {
@@ -132,11 +136,12 @@ export function useRealtimeSync({ accountId }: UseRealtimeSyncOptions) {
     })
 
     return () => {
-      if (channel) {
-        import('@/lib/supabase/client').then(({ createSupabaseBrowserClient }) => {
-          createSupabaseBrowserClient().removeChannel(channel!)
-        })
+      // H-06 fix: reuse the same supabaseInstance for cleanup instead of
+      // creating a second browser client, which was wasteful and caused
+      // the cleanup to operate on a different client than the one subscribed.
+      if (channel && supabaseInstance) {
+        supabaseInstance.removeChannel(channel)
       }
     }
-  }, [mutate]) // mutate is stable — no re-subscription needed
+  }, [mutate, accountId]) // re-subscribe when accountId changes (different account)
 }

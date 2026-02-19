@@ -8,17 +8,10 @@
  */
 
 import { type NextRequest, NextResponse } from 'next/server'
+import { isServerSupabaseConfigured } from '@/lib/supabase/config'
 
-// ─── Supabase mode detection ──────────────────────────────────────────────────
-
-function isSupabaseReady(): boolean {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
-  return (
-    url.length > 0 && !url.includes('VOTRE_REF') &&
-    key.length > 0 && !key.includes('VOTRE_SERVICE')
-  )
-}
+// Alias for local readability
+const isSupabaseReady = isServerSupabaseConfigured
 
 // ─── Timestamp helper ─────────────────────────────────────────────────────────
 
@@ -1112,8 +1105,17 @@ async function handler(
         // null = fall through to mock (e.g. candles when external APIs fail)
       }
     } catch (err) {
-      console.error('[proxy] Supabase error, falling back to mock:', apiPath, err)
-      // Fall through to mock on any Supabase error
+      console.error('[proxy] Supabase error on', apiPath, err)
+      // In production, never silently serve mock data after a real DB failure —
+      // that would show fabricated positions/balances to authenticated users.
+      // Return a 503 so the client can show a proper error state.
+      if (process.env.NODE_ENV === 'production') {
+        return NextResponse.json(
+          { error: 'Service temporarily unavailable. Please try again.' },
+          { status: 503 }
+        )
+      }
+      // In dev/test: fall through to mock so local development still works
     }
   }
 

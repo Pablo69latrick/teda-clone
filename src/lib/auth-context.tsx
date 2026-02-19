@@ -22,6 +22,7 @@ import {
 } from 'react'
 import { useRouter } from 'next/navigation'
 import type { User, SessionResponse } from '@/types'
+import { isBrowserSupabaseConfigured } from '@/lib/supabase/config'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,19 +38,6 @@ interface AuthContextValue extends AuthState {
   signUp: (name: string, email: string, password: string) => Promise<void>
   signOut: () => Promise<void>
   clearError: () => void
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function isSupabaseConfigured(): boolean {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
-  return (
-    url.length > 0 &&
-    !url.includes('VOTRE_REF') &&
-    key.length > 0 &&
-    !key.includes('VOTRE_ANON')
-  )
 }
 
 // Lazy-import Supabase browser client only when configured
@@ -80,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function fetchSession() {
       try {
-        if (isSupabaseConfigured()) {
+        if (isBrowserSupabaseConfigured()) {
           // Supabase mode: check session then fetch profile
           const supabase = await getSupabase()
           const { data: { session } } = await supabase.auth.getSession()
@@ -113,7 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     setState(s => ({ ...s, submitting: true, error: null }))
     try {
-      if (isSupabaseConfigured()) {
+      if (isBrowserSupabaseConfigured()) {
         // Supabase Auth
         const supabase = await getSupabase()
         const { data, error } = await supabase.auth.signInWithPassword({ email, password })
@@ -150,7 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signUp = useCallback(async (name: string, email: string, password: string) => {
     setState(s => ({ ...s, submitting: true, error: null }))
     try {
-      if (isSupabaseConfigured()) {
+      if (isBrowserSupabaseConfigured()) {
         // Supabase Auth — sends confirmation email
         const supabase = await getSupabase()
         const { error } = await supabase.auth.signUp({
@@ -186,7 +174,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     setState(s => ({ ...s, submitting: true }))
     try {
-      if (isSupabaseConfigured()) {
+      if (isBrowserSupabaseConfigured()) {
         const supabase = await getSupabase()
         await supabase.auth.signOut()
       } else {
