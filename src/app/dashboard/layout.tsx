@@ -1,4 +1,5 @@
 import { Sidebar, MobileBottomNav } from '@/components/layout/sidebar'
+import { DashboardRealtime } from '@/components/dashboard/realtime-sync'
 
 export default function DashboardLayout({
   children,
@@ -8,6 +9,9 @@ export default function DashboardLayout({
   return (
     <div className="relative flex min-h-screen flex-col dashboard-theme bg-[#f5f5f5] text-[#111111]">
       <div className="flex-1">
+        {/* Supabase Realtime → SWR cache invalidation (invisible, no render) */}
+        <DashboardRealtime />
+
         {/* Sidebar (desktop) */}
         <Sidebar userRole="admin" />
 
