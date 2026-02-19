@@ -161,12 +161,46 @@
   --shimmer-gradient: linear-gradient(90deg, #0d0d0d00 0, #0d0d0d1a 20%, #2929291a 60%, #0d0d0d00);
 }
 
-/* Dashboard theme override */
-.dark .dashboard-theme {
-  --card: #1a1a1a;
-  --dark: #0f0f0f;
-  --grey: #262626;
-  --light-dark: #1a1a1a;
+/* Dashboard theme — light mode matching VerticalProp exactly */
+/* Must override .dark which is set on <html> */
+.dark .dashboard-theme,
+.dashboard-theme {
+  --background: #f5f5f5;
+  --foreground: #111111;
+  --card: #ffffff;
+  --card-foreground: #111111;
+  --fixed-card: #ffffff;
+  --light-dark: #fafafa;
+  --dark: #f0f0f0;
+  --popover: #ffffff;
+  --popover-foreground: #111111;
+  --primary: #111111;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f0f0;
+  --secondary-foreground: #111111;
+  --muted: #f0f0f0;
+  --muted-foreground: #888888;
+  --accent: #e8e8e8;
+  --accent-foreground: #111111;
+  --destructive: #e40014;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #888888;
+  --grey: #e5e5e5;
+  --text: #666666;
+  --profit: #16a34a;
+  --loss: #dc2626;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #111111;
+  --sidebar-primary: #111111;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f0f0f0;
+  --sidebar-accent-foreground: #111111;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #888888;
+  --shimmer-bg: #e5e5e5;
+  --shimmer-gradient: linear-gradient(90deg, #fff0 0, #fff6 20%, #fff9 60%, #fff0);
+  color-scheme: light;
 }
 
 /* ─────────────────────────────────────────────
