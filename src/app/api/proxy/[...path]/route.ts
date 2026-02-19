@@ -832,6 +832,195 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
     })
   }
 
+  // ── engine/partial-close ──────────────────────────────────────────────────
+  if (apiPath === 'engine/partial-close') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    if (!body.position_id || typeof body.position_id !== 'string') {
+      return NextResponse.json({ error: 'Invalid position_id' }, { status: 400 })
+    }
+
+    const closeQty = Number(body.quantity)
+    if (!Number.isFinite(closeQty) || closeQty <= 0) {
+      return NextResponse.json({ error: 'quantity must be a positive number' }, { status: 400 })
+    }
+
+    const admin = createSupabaseAdminClient()
+    const positionId = body.position_id as string
+
+    // Ownership check via session-scoped client (RLS enforced)
+    const { data: pos } = await supabase
+      .from('positions')
+      .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
+      .eq('id', positionId)
+      .eq('status', 'open')
+      .single()
+
+    if (!pos) {
+      return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
+    }
+
+    // Explicit ownership check
+    const { data: posAccount } = await supabase
+      .from('accounts')
+      .select('id, user_id, available_margin, realized_pnl')
+      .eq('id', pos.account_id)
+      .single()
+    if (!posAccount || posAccount.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    const totalQty = Number(pos.quantity)
+    if (closeQty >= totalQty) {
+      // If closing all, redirect to full close logic
+      return NextResponse.json({ error: 'Use close-position to close all. quantity must be less than full position size.' }, { status: 400 })
+    }
+
+    // Get exit price from price_cache
+    const { data: priceRow } = await admin
+      .from('price_cache')
+      .select('current_price, current_bid, current_ask')
+      .eq('symbol', pos.symbol)
+      .single()
+
+    const exitPrice = pos.direction === 'long'
+      ? (priceRow?.current_bid ?? priceRow?.current_price ?? Number(pos.entry_price))
+      : (priceRow?.current_ask ?? priceRow?.current_price ?? Number(pos.entry_price))
+
+    const priceDiff    = pos.direction === 'long'
+      ? exitPrice - Number(pos.entry_price)
+      : Number(pos.entry_price) - exitPrice
+    const partialPnl   = priceDiff * closeQty * Number(pos.leverage)
+    const closeFee     = exitPrice * closeQty * 0.0007
+
+    // Fraction of margin to release
+    const marginFraction = closeQty / totalQty
+    const releasedMargin = Number(pos.isolated_margin) * marginFraction
+    const remainingQty   = totalQty - closeQty
+
+    const now = Date.now()
+
+    // Update position: reduce quantity, keep open
+    const { error: updateErr } = await admin
+      .from('positions')
+      .update({
+        quantity:        remainingQty,
+        isolated_margin: Number(pos.isolated_margin) - releasedMargin,
+        realized_pnl:    partialPnl,
+        total_fees:      Number(pos.trade_fees) + closeFee,
+        updated_at:      new Date().toISOString(),
+      })
+      .eq('id', positionId)
+
+    if (updateErr) {
+      console.error('[partial-close] update error:', updateErr)
+      return NextResponse.json({ error: 'Failed to partially close position. Please try again.' }, { status: 500 })
+    }
+
+    // Release partial margin back to account (reduce total_margin_required proportionally)
+    const { data: acctPartial } = await admin
+      .from('accounts')
+      .select('available_margin, realized_pnl, total_margin_required')
+      .eq('id', pos.account_id)
+      .single()
+
+    if (acctPartial) {
+      await admin
+        .from('accounts')
+        .update({
+          available_margin:      Number(acctPartial.available_margin) + releasedMargin + partialPnl - closeFee,
+          total_margin_required: Math.max(0, Number(acctPartial.total_margin_required) - releasedMargin),
+          realized_pnl:          Number(acctPartial.realized_pnl) + partialPnl,
+          updated_at:            new Date().toISOString(),
+        })
+        .eq('id', pos.account_id)
+    }
+
+    // Equity snapshot (uses post-update balance from acctPartial if available)
+    const baseMargin = acctPartial
+      ? Number(acctPartial.available_margin) + releasedMargin + partialPnl - closeFee
+      : Number(posAccount.available_margin) + releasedMargin + partialPnl - closeFee
+    await admin.from('equity_history').insert({
+      account_id: pos.account_id,
+      ts:         now,
+      equity:     baseMargin,
+      pnl:        partialPnl,
+    })
+
+    // Activity record
+    const { data: instr } = await admin
+      .from('instruments').select('price_decimals').eq('symbol', pos.symbol).single()
+    const pDec   = instr?.price_decimals ?? 2
+    const pnlStr = partialPnl >= 0 ? `+$${partialPnl.toFixed(2)}` : `-$${Math.abs(partialPnl).toFixed(2)}`
+    await admin.from('activity').insert({
+      account_id: pos.account_id,
+      type:       'closed',
+      title:      `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} partial close`,
+      sub:        `${closeQty} lots @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
+      ts:         now,
+      pnl:        partialPnl,
+    })
+
+    return NextResponse.json({
+      success:        true,
+      position_id:    positionId,
+      closed_quantity: closeQty,
+      remaining_qty:  remainingQty,
+      exit_price:     exitPrice,
+      realized_pnl:   partialPnl,
+      close_fee:      closeFee,
+    })
+  }
+
+  // ── engine/cancel-order ───────────────────────────────────────────────────
+  if (apiPath === 'engine/cancel-order') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    if (!body.order_id || typeof body.order_id !== 'string') {
+      return NextResponse.json({ error: 'Invalid order_id' }, { status: 400 })
+    }
+
+    const admin = createSupabaseAdminClient()
+    const orderId = body.order_id as string
+
+    // Ownership check via session-scoped client
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id, account_id, status')
+      .eq('id', orderId)
+      .in('status', ['pending', 'partial'])
+      .single()
+
+    if (!order) {
+      return NextResponse.json({ error: 'Order not found or already cancelled/filled' }, { status: 404 })
+    }
+
+    // Explicit ownership check
+    const { data: orderAccount } = await supabase
+      .from('accounts').select('id, user_id').eq('id', order.account_id).single()
+    if (!orderAccount || orderAccount.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    const { error: cancelErr } = await admin
+      .from('orders')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('id', orderId)
+
+    if (cancelErr) {
+      console.error('[cancel-order] update error:', cancelErr)
+      return NextResponse.json({ error: 'Failed to cancel order. Please try again.' }, { status: 500 })
+    }
+
+    return NextResponse.json({ success: true, order_id: orderId })
+  }
+
   return null
 }
 
