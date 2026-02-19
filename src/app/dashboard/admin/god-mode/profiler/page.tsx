@@ -37,9 +37,22 @@ function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />
 }
 
-type Tab = 'users' | 'banned' | 'admins' | 'security'
+type Tab = 'users' | 'banned' | 'admins' | 'security' | 'kyc'
 type SortKey = 'name' | 'createdAt' | 'lastSeen'
 type SortDir = 'asc' | 'desc'
+
+// ─── Mock KYC data ──────────────────────────────────────────────────────
+type KycStatus = 'approved' | 'pending' | 'rejected' | 'not_started'
+const MOCK_KYC = [
+  { id: 'k1', name: 'Alex Rivera', email: 'alex@example.com', country: 'France', dob: '1990-04-15', submitted: Date.now() - 2 * 86400_000, status: 'approved' as KycStatus, docType: 'Passport', docNumber: 'FR****8421', reviewer: 'Admin Jules', reviewedAt: Date.now() - 1 * 86400_000, risk: 'low' as const, pep: false, notes: '' },
+  { id: 'k2', name: 'Jamie Chen', email: 'jamie@example.com', country: 'United Kingdom', dob: '1988-11-03', submitted: Date.now() - 4 * 86400_000, status: 'pending' as KycStatus, docType: 'National ID', docNumber: null, reviewer: null, reviewedAt: null, risk: 'medium' as const, pep: false, notes: 'Awaiting document re-upload' },
+  { id: 'k3', name: 'Sam Patel', email: 'sam@example.com', country: 'United States', dob: '1995-07-22', submitted: Date.now() - 6 * 86400_000, status: 'rejected' as KycStatus, docType: 'Driving License', docNumber: null, reviewer: 'Admin Jules', reviewedAt: Date.now() - 5 * 86400_000, risk: 'high' as const, pep: false, notes: 'Document expired, blurry scan' },
+  { id: 'k4', name: 'Maria Torres', email: 'maria@example.com', country: 'Spain', dob: '1992-02-08', submitted: Date.now() - 1 * 86400_000, status: 'pending' as KycStatus, docType: 'Passport', docNumber: null, reviewer: null, reviewedAt: null, risk: 'low' as const, pep: false, notes: '' },
+  { id: 'k5', name: 'Chris Lee', email: 'chris@example.com', country: 'Australia', dob: '1985-09-30', submitted: Date.now() - 8 * 86400_000, status: 'approved' as KycStatus, docType: 'Passport', docNumber: 'AU****7103', reviewer: 'Admin Jules', reviewedAt: Date.now() - 7 * 86400_000, risk: 'low' as const, pep: false, notes: '' },
+  { id: 'k6', name: 'Lucas Martin', email: 'lucas@example.com', country: 'Germany', dob: '1993-12-14', submitted: null, status: 'not_started' as KycStatus, docType: null, docNumber: null, reviewer: null, reviewedAt: null, risk: 'low' as const, pep: false, notes: 'Reminder sent' },
+  { id: 'k7', name: 'Sophia Brown', email: 'sophia@example.com', country: 'Canada', dob: '1997-06-01', submitted: Date.now() - 3 * 86400_000, status: 'pending' as KycStatus, docType: 'National ID', docNumber: null, reviewer: null, reviewedAt: null, risk: 'medium' as const, pep: true, notes: '⚠️ PEP flag — requires enhanced due diligence' },
+  { id: 'k8', name: 'Oliver Davis', email: 'oliver@example.com', country: 'Singapore', dob: '1991-03-17', submitted: Date.now() - 10 * 86400_000, status: 'approved' as KycStatus, docType: 'Passport', docNumber: 'SG****2845', reviewer: 'Admin Jules', reviewedAt: Date.now() - 9 * 86400_000, risk: 'low' as const, pep: false, notes: '' },
+]
 
 // ─── Mock activity log ──────────────────────────────────────────────────
 const MOCK_ACTIVITY = [
@@ -345,6 +358,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'banned', label: 'Banned', icon: UserX },
   { id: 'admins', label: 'Admins', icon: Crown },
   { id: 'security', label: 'Security', icon: Shield },
+  { id: 'kyc', label: 'KYC / AML', icon: ShieldCheck },
 ]
 
 // ─── Main Page ──────────────────────────────────────────────────────────
@@ -698,6 +712,156 @@ export default function ProfilerPage() {
                   </div>
                 )
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════ TAB: KYC ══════ */}
+      {activeTab === 'kyc' && (
+        <div className="flex flex-col gap-4">
+          {/* KYC KPIs */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: 'Approved', count: MOCK_KYC.filter(k => k.status === 'approved').length, color: 'text-profit', bg: 'border-profit/20' },
+              { label: 'Pending Review', count: MOCK_KYC.filter(k => k.status === 'pending').length, color: 'text-yellow-500', bg: 'border-yellow-500/20' },
+              { label: 'Rejected', count: MOCK_KYC.filter(k => k.status === 'rejected').length, color: 'text-loss', bg: 'border-loss/20' },
+              { label: 'Not Started', count: MOCK_KYC.filter(k => k.status === 'not_started').length, color: 'text-muted-foreground', bg: '' },
+            ].map(s => (
+              <div key={s.label} className={`rounded-xl bg-card border ${s.bg || 'border-border/50'} p-4 text-center`}>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{s.label}</div>
+                <div className={`text-2xl font-bold tabular-nums ${s.color}`}>{s.count}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* KYC table */}
+          <div className="rounded-xl bg-card border border-border/50 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border/30">
+              <div className="flex items-center gap-2">
+                <Shield className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">KYC Submissions</span>
+                <span className="text-[10px] text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded-full">{MOCK_KYC.length}</span>
+              </div>
+              <Badge variant="secondary" className="text-[9px]">AML/KYC Compliant</Badge>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/30 bg-muted/20">
+                    <th className="text-left px-5 py-3">User</th>
+                    <th className="text-left px-3 py-3">Country</th>
+                    <th className="text-left px-3 py-3">Document</th>
+                    <th className="text-center px-3 py-3">Risk</th>
+                    <th className="text-center px-3 py-3">PEP</th>
+                    <th className="text-center px-3 py-3">Status</th>
+                    <th className="text-right px-3 py-3">Submitted</th>
+                    <th className="text-right px-5 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {MOCK_KYC.map(kyc => {
+                    const statusMap: Record<KycStatus, { label: string; cls: string }> = {
+                      approved: { label: '✅ Approved', cls: 'bg-profit/10 text-profit border-profit/20' },
+                      pending: { label: '⏳ Pending', cls: 'bg-yellow-500/10 text-yellow-600 border-yellow-500/20' },
+                      rejected: { label: '❌ Rejected', cls: 'bg-loss/10 text-loss border-loss/20' },
+                      not_started: { label: '— Not started', cls: 'bg-muted/30 text-muted-foreground border-border/30' },
+                    }
+                    const riskMap = { low: 'text-profit', medium: 'text-yellow-500', high: 'text-loss' }
+                    const s = statusMap[kyc.status]
+                    return (
+                      <tr key={kyc.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors group">
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="size-7 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold shrink-0">{kyc.name[0]}</div>
+                            <div>
+                              <div className="font-medium">{kyc.name}</div>
+                              <div className="text-[10px] text-muted-foreground">{kyc.email}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground">{kyc.country}</td>
+                        <td className="px-3 py-3">
+                          {kyc.docType ? (
+                            <div>
+                              <div className="font-medium">{kyc.docType}</div>
+                              {kyc.docNumber && <div className="font-mono text-[10px] text-muted-foreground">{kyc.docNumber}</div>}
+                            </div>
+                          ) : <span className="text-muted-foreground/40">—</span>}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <span className={cn('font-semibold capitalize text-[10px]', riskMap[kyc.risk])}>{kyc.risk}</span>
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {kyc.pep
+                            ? <span className="text-[9px] bg-orange-500/15 text-orange-500 border border-orange-500/20 px-1.5 py-0.5 rounded-full font-bold">PEP</span>
+                            : <span className="text-muted-foreground/30 text-[10px]">—</span>
+                          }
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <span className={cn('text-[9px] font-medium border px-1.5 py-0.5 rounded-full', s.cls)}>{s.label}</span>
+                        </td>
+                        <td className="px-3 py-3 text-right text-[10px] text-muted-foreground">
+                          {kyc.submitted ? timeAgo(kyc.submitted) : '—'}
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {kyc.status === 'pending' && (
+                              <>
+                                <button className="h-6 px-2 text-[10px] font-medium rounded-lg bg-profit/10 text-profit hover:bg-profit/20 border border-profit/20 transition-colors">
+                                  Approve
+                                </button>
+                                <button className="h-6 px-2 text-[10px] font-medium rounded-lg bg-loss/10 text-loss hover:bg-loss/20 border border-loss/20 transition-colors">
+                                  Reject
+                                </button>
+                              </>
+                            )}
+                            {kyc.status === 'not_started' && (
+                              <button className="h-6 px-2 text-[10px] font-medium rounded-lg bg-muted hover:bg-muted/80 text-muted-foreground border border-border/30 transition-colors">
+                                Send Reminder
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Detail: PEP alerts */}
+          {MOCK_KYC.some(k => k.pep) && (
+            <div className="rounded-xl bg-orange-500/5 border border-orange-500/20 px-5 py-4 flex items-start gap-3">
+              <AlertTriangle className="size-4 text-orange-500 shrink-0 mt-0.5" />
+              <div className="text-xs">
+                <span className="font-semibold text-foreground">PEP Detected — Enhanced Due Diligence Required</span>
+                <p className="text-muted-foreground mt-0.5">
+                  {MOCK_KYC.filter(k => k.pep).map(k => k.name).join(', ')} {MOCK_KYC.filter(k => k.pep).length === 1 ? 'is' : 'are'} flagged as a Politically Exposed Person.
+                  Additional verification steps and source-of-funds documentation must be collected before approval.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Notes from rejected */}
+          <div className="rounded-xl bg-card border border-border/50">
+            <div className="flex items-center gap-2 px-5 py-4 border-b border-border/30">
+              <Lock className="size-4 text-muted-foreground" />
+              <span className="text-sm font-semibold">Review Notes</span>
+            </div>
+            <div className="divide-y divide-border/20">
+              {MOCK_KYC.filter(k => k.notes || k.status === 'rejected').map(k => (
+                <div key={k.id} className="px-5 py-3 flex items-start gap-3">
+                  <div className="size-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">{k.name[0]}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium">{k.name}</div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">{k.notes || 'No notes'}</div>
+                    {k.reviewer && <div className="text-[10px] text-muted-foreground/60 mt-0.5">Reviewed by {k.reviewer} · {k.reviewedAt ? timeAgo(k.reviewedAt) : ''}</div>}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

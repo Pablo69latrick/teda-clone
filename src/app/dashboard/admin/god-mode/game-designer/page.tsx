@@ -37,7 +37,59 @@ function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />
 }
 
-type Tab = 'templates' | 'analytics' | 'pricing' | 'rules'
+type Tab = 'templates' | 'analytics' | 'pricing' | 'rules' | 'simulation'
+
+// ─── Simulation data ─────────────────────────────────────────────────────
+type SimStep = { day: number; equity: number; pnl: number; dailyLoss: number; drawdownFromPeak: number; event: string | null; breached: boolean; passed: boolean }
+
+function runSimulation(opts: {
+  accountSize: number
+  dailyLossLimitPct: number
+  maxDrawdownPct: number
+  profitTargetP1Pct: number
+  minDays: number
+  volatility: number
+  seed: number
+}): SimStep[] {
+  const { accountSize, dailyLossLimitPct, maxDrawdownPct, profitTargetP1Pct, minDays, volatility, seed } = opts
+  const steps: SimStep[] = []
+  let equity = accountSize
+  let peak = accountSize
+  const dailyLossLimit = accountSize * (dailyLossLimitPct / 100)
+  const maxDrawdown = accountSize * (maxDrawdownPct / 100)
+  const target = accountSize * (1 + profitTargetP1Pct / 100)
+  let breached = false
+  let passed = false
+
+  // Seeded pseudo-random
+  let rng = seed
+  const rand = () => {
+    rng = (rng * 16807 + 0) % 2147483647
+    return (rng - 1) / 2147483646
+  }
+
+  for (let day = 1; day <= 40 && !breached && !passed; day++) {
+    const drift = 0.0015 * (1 + (rand() - 0.3) * 2)
+    const vol = volatility / 100 * (rand() * 1.5 + 0.5)
+    const r = drift + (rand() - 0.5) * vol * 2
+    const pnl = equity * r
+    equity = equity + pnl
+    if (equity > peak) peak = equity
+    const drawdownFromPeak = (peak - equity) / accountSize * 100
+    const dailyLossPct = pnl < 0 ? Math.abs(pnl) / accountSize * 100 : 0
+
+    let event: string | null = null
+    if (pnl < -dailyLossLimit) { event = '💥 Daily loss limit hit'; breached = true }
+    else if ((peak - equity) >= maxDrawdown) { event = '💥 Max drawdown hit'; breached = true }
+    else if (equity >= target && day >= minDays) { event = '✅ Phase 1 passed!'; passed = true }
+    else if (day % 7 === 0) event = '🗞️ High-impact news event'
+    else if (rand() > 0.85) event = '📈 Strong trending day'
+    else if (rand() < 0.12) event = '📉 Volatile session'
+
+    steps.push({ day, equity, pnl, dailyLoss: dailyLossPct, drawdownFromPeak, event, breached, passed })
+  }
+  return steps
+}
 
 // ─── Mock analytics per template ────────────────────────────────────────
 const TEMPLATE_ANALYTICS = [
@@ -377,6 +429,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'pricing', label: 'Pricing', icon: Tag },
   { id: 'rules', label: 'Rules Reference', icon: Shield },
+  { id: 'simulation', label: 'Simulation', icon: Activity },
 ]
 
 // ─── Main Page ──────────────────────────────────────────────────────────
@@ -389,6 +442,27 @@ export default function GameDesignerPage() {
   const [toast, setToast] = useState<string | null>(null)
   const [confirmModal, setConfirmModal] = useState<{ title: string; description: string; confirmLabel: string; confirmCls: string; onConfirm: () => void } | null>(null)
   const [templateSearch, setTemplateSearch] = useState('')
+
+  // Simulation state
+  const [simAccountSize, setSimAccountSize] = useState(10_000)
+  const [simDailyLoss, setSimDailyLoss] = useState(5)
+  const [simMaxDrawdown, setSimMaxDrawdown] = useState(10)
+  const [simProfitTarget, setSimProfitTarget] = useState(8)
+  const [simMinDays, setSimMinDays] = useState(5)
+  const [simVolatility, setSimVolatility] = useState(12)
+  const [simSeed, setSimSeed] = useState(42)
+  const [simRun, setSimRun] = useState<SimStep[] | null>(null)
+  const [simRunning, setSimRunning] = useState(false)
+
+  const runSim = () => {
+    setSimRunning(true)
+    setTimeout(() => {
+      const result = runSimulation({ accountSize: simAccountSize, dailyLossLimitPct: simDailyLoss, maxDrawdownPct: simMaxDrawdown, profitTargetP1Pct: simProfitTarget, minDays: simMinDays, volatility: simVolatility, seed: simSeed })
+      setSimRun(result)
+      setSimRunning(false)
+    }, 400)
+  }
+  const randomizeSeed = () => setSimSeed(Math.floor(Math.random() * 9999) + 1)
 
   const displayTemplates = localTemplates ?? templates ?? []
 
@@ -793,6 +867,344 @@ export default function GameDesignerPage() {
           </div>
         </div>
       )}
+
+      {/* ─── SIMULATION ───────────────────────────────────────────────── */}
+      {activeTab === 'simulation' && (() => {
+        const lastStep = simRun?.[simRun.length - 1]
+        const finalStatus = !simRun ? null : lastStep?.breached ? 'breached' : lastStep?.passed ? 'passed' : 'running'
+        const minEquity = simRun ? Math.min(...simRun.map(s => s.equity)) : 0
+        const maxEquity = simRun ? Math.max(...simRun.map(s => s.equity)) : 0
+        const chartH = 180
+        const chartW = 560
+        const pad = { top: 16, bottom: 20, left: 8, right: 8 }
+        const innerH = chartH - pad.top - pad.bottom
+        const innerW = chartW - pad.left - pad.right
+        const eqRange = maxEquity - minEquity || 1
+        const yScale = (eq: number) => pad.top + innerH - ((eq - minEquity) / eqRange) * innerH
+        const xScale = (i: number, total: number) => pad.left + (i / Math.max(total - 1, 1)) * innerW
+        const targetLine = simAccountSize * (1 + simProfitTarget / 100)
+        const ddLine = simAccountSize * (1 - simMaxDrawdown / 100)
+
+        return (
+          <div className="flex flex-col gap-5">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* ─ Controls panel ─ */}
+              <div className="rounded-xl bg-card border border-border/50 p-5 flex flex-col gap-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <Activity className="size-4 text-primary" />
+                  <h3 className="text-sm font-semibold">Challenge Parameters</h3>
+                </div>
+
+                {/* Account size */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Account Size</span>
+                    <span className="font-semibold text-foreground">{formatCurrency(simAccountSize)}</span>
+                  </div>
+                  <input type="range" min={5000} max={200000} step={5000} value={simAccountSize} onChange={e => setSimAccountSize(+e.target.value)}
+                    className="w-full h-1.5 rounded-full appearance-none bg-muted/50 accent-primary cursor-pointer" />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/50 mt-0.5"><span>$5K</span><span>$200K</span></div>
+                </div>
+
+                {/* Daily loss */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Daily Loss Limit</span>
+                    <span className="font-semibold text-loss">{simDailyLoss}%</span>
+                  </div>
+                  <input type="range" min={1} max={10} step={0.5} value={simDailyLoss} onChange={e => setSimDailyLoss(+e.target.value)}
+                    className="w-full h-1.5 rounded-full appearance-none bg-muted/50 accent-loss cursor-pointer" />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/50 mt-0.5"><span>1%</span><span>10%</span></div>
+                </div>
+
+                {/* Max drawdown */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Max Drawdown</span>
+                    <span className="font-semibold text-loss">{simMaxDrawdown}%</span>
+                  </div>
+                  <input type="range" min={3} max={20} step={0.5} value={simMaxDrawdown} onChange={e => setSimMaxDrawdown(+e.target.value)}
+                    className="w-full h-1.5 rounded-full appearance-none bg-muted/50 accent-loss cursor-pointer" />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/50 mt-0.5"><span>3%</span><span>20%</span></div>
+                </div>
+
+                {/* Profit target */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Profit Target (P1)</span>
+                    <span className="font-semibold text-profit">{simProfitTarget}%</span>
+                  </div>
+                  <input type="range" min={3} max={20} step={0.5} value={simProfitTarget} onChange={e => setSimProfitTarget(+e.target.value)}
+                    className="w-full h-1.5 rounded-full appearance-none bg-muted/50 accent-profit cursor-pointer" />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/50 mt-0.5"><span>3%</span><span>20%</span></div>
+                </div>
+
+                {/* Min days */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Min Trading Days</span>
+                    <span className="font-semibold text-foreground">{simMinDays}d</span>
+                  </div>
+                  <input type="range" min={1} max={20} step={1} value={simMinDays} onChange={e => setSimMinDays(+e.target.value)}
+                    className="w-full h-1.5 rounded-full appearance-none bg-muted/50 accent-primary cursor-pointer" />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/50 mt-0.5"><span>1d</span><span>20d</span></div>
+                </div>
+
+                {/* Volatility */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Trader Volatility</span>
+                    <span className="font-semibold text-yellow-500">{simVolatility}%</span>
+                  </div>
+                  <input type="range" min={2} max={30} step={1} value={simVolatility} onChange={e => setSimVolatility(+e.target.value)}
+                    className="w-full h-1.5 rounded-full appearance-none bg-muted/50 accent-yellow-500 cursor-pointer" />
+                  <div className="flex justify-between text-[9px] text-muted-foreground/50 mt-0.5"><span>2% (tame)</span><span>30% (erratic)</span></div>
+                </div>
+
+                {/* Seed */}
+                <div>
+                  <div className="flex justify-between text-[10px] text-muted-foreground mb-1.5">
+                    <span>Random Seed</span>
+                    <span className="font-semibold text-foreground tabular-nums">#{simSeed}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input type="number" min={1} max={9999} value={simSeed} onChange={e => setSimSeed(+e.target.value)}
+                      className="flex-1 px-2 py-1 text-xs bg-muted/30 border border-border/50 rounded-lg focus:outline-none focus:border-primary/50 tabular-nums" />
+                    <button onClick={randomizeSeed} className="px-2 py-1 text-[10px] bg-muted/50 hover:bg-muted border border-border/30 rounded-lg transition-colors font-medium">🎲 Random</button>
+                  </div>
+                </div>
+
+                {/* Run button */}
+                <button
+                  onClick={runSim}
+                  disabled={simRunning}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                >
+                  {simRunning ? (
+                    <><div className="size-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />Simulating…</>
+                  ) : (
+                    <><Activity className="size-3.5" />Run Simulation</>
+                  )}
+                </button>
+              </div>
+
+              {/* ─ Chart + result ─ */}
+              <div className="lg:col-span-2 flex flex-col gap-4">
+                {/* Result banner */}
+                {finalStatus && (
+                  <div className={cn('rounded-xl border px-5 py-4 flex items-center gap-4',
+                    finalStatus === 'passed' ? 'bg-profit/10 border-profit/30' :
+                    finalStatus === 'breached' ? 'bg-loss/10 border-loss/30' :
+                    'bg-yellow-500/10 border-yellow-500/30'
+                  )}>
+                    <div className={cn('text-3xl', finalStatus === 'passed' ? '' : '')}>
+                      {finalStatus === 'passed' ? '✅' : finalStatus === 'breached' ? '💥' : '⏳'}
+                    </div>
+                    <div className="flex-1">
+                      <div className={cn('text-sm font-bold',
+                        finalStatus === 'passed' ? 'text-profit' : finalStatus === 'breached' ? 'text-loss' : 'text-yellow-500'
+                      )}>
+                        {finalStatus === 'passed' ? 'Phase 1 Passed!' : finalStatus === 'breached' ? 'Account Breached' : 'Still Running (40d limit)'}
+                      </div>
+                      {lastStep && (
+                        <div className="text-[11px] text-muted-foreground mt-0.5">
+                          Final equity: <span className="font-semibold tabular-nums">{formatCurrency(lastStep.equity)}</span>
+                          {' · '}Day <span className="font-semibold">{lastStep.day}</span>
+                          {' · '}P&L: <span className={cn('font-semibold tabular-nums', lastStep.equity >= simAccountSize ? 'text-profit' : 'text-loss')}>{lastStep.equity >= simAccountSize ? '+' : ''}{formatCurrency(lastStep.equity - simAccountSize)}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-right text-[10px] text-muted-foreground">
+                      <div>Pass target: <span className="font-semibold">{formatCurrency(targetLine)}</span></div>
+                      <div>DD limit: <span className="font-semibold">{formatCurrency(ddLine)}</span></div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Equity chart */}
+                <div className="rounded-xl bg-card border border-border/50 p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xs font-semibold flex items-center gap-1.5"><BarChart2 className="size-3.5 text-muted-foreground" /> Equity Curve</h3>
+                    <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                      <span className="flex items-center gap-1"><span className="size-2 inline-block rounded-full bg-profit" />Target</span>
+                      <span className="flex items-center gap-1"><span className="size-2 inline-block rounded-full bg-loss" />DD Limit</span>
+                      <span className="flex items-center gap-1"><span className="size-2 inline-block rounded-full bg-primary" />Equity</span>
+                    </div>
+                  </div>
+
+                  {!simRun ? (
+                    <div className="h-44 flex items-center justify-center text-xs text-muted-foreground/50">
+                      <div className="text-center">
+                        <Activity className="size-8 mx-auto mb-2 opacity-20" />
+                        <div>Configure parameters and click Run Simulation</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" style={{ height: chartH }}>
+                      {/* Grid lines */}
+                      {[0, 0.25, 0.5, 0.75, 1].map(pct => {
+                        const y = pad.top + innerH * pct
+                        const val = maxEquity - eqRange * pct
+                        return (
+                          <g key={pct}>
+                            <line x1={pad.left} y1={y} x2={chartW - pad.right} y2={y} stroke="currentColor" strokeOpacity={0.06} strokeWidth={1} />
+                            <text x={pad.left} y={y - 3} fontSize={8} fill="currentColor" fillOpacity={0.35}>{formatCurrency(val, 'USD', 0)}</text>
+                          </g>
+                        )
+                      })}
+
+                      {/* Target line */}
+                      {targetLine >= minEquity && targetLine <= maxEquity && (
+                        <line x1={pad.left} y1={yScale(targetLine)} x2={chartW - pad.right} y2={yScale(targetLine)}
+                          stroke="#22c55e" strokeWidth={1} strokeDasharray="4 3" strokeOpacity={0.6} />
+                      )}
+
+                      {/* DD limit line */}
+                      {ddLine >= minEquity && ddLine <= maxEquity && (
+                        <line x1={pad.left} y1={yScale(ddLine)} x2={chartW - pad.right} y2={yScale(ddLine)}
+                          stroke="#ef4444" strokeWidth={1} strokeDasharray="4 3" strokeOpacity={0.6} />
+                      )}
+
+                      {/* Starting balance line */}
+                      {simAccountSize >= minEquity && simAccountSize <= maxEquity && (
+                        <line x1={pad.left} y1={yScale(simAccountSize)} x2={chartW - pad.right} y2={yScale(simAccountSize)}
+                          stroke="currentColor" strokeWidth={0.5} strokeDasharray="2 4" strokeOpacity={0.25} />
+                      )}
+
+                      {/* Fill under curve */}
+                      {simRun.length > 1 && (() => {
+                        const pts = simRun.map((s, i) => `${xScale(i, simRun.length)},${yScale(s.equity)}`).join(' ')
+                        const firstX = xScale(0, simRun.length)
+                        const lastX = xScale(simRun.length - 1, simRun.length)
+                        const baseY = chartH - pad.bottom
+                        return (
+                          <polygon
+                            points={`${firstX},${baseY} ${pts} ${lastX},${baseY}`}
+                            fill={finalStatus === 'breached' ? '#ef4444' : '#6366f1'}
+                            fillOpacity={0.07}
+                          />
+                        )
+                      })()}
+
+                      {/* Line segments colored by segment */}
+                      {simRun.map((s, i) => {
+                        if (i === 0) return null
+                        const prev = simRun[i - 1]
+                        const x1 = xScale(i - 1, simRun.length)
+                        const y1 = yScale(prev.equity)
+                        const x2 = xScale(i, simRun.length)
+                        const y2 = yScale(s.equity)
+                        const color = s.breached ? '#ef4444' : s.passed ? '#22c55e' : s.pnl >= 0 ? '#6366f1' : '#f59e0b'
+                        return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={1.5} />
+                      })}
+
+                      {/* Event markers */}
+                      {simRun.map((s, i) => {
+                        if (!s.event) return null
+                        const x = xScale(i, simRun.length)
+                        const y = yScale(s.equity)
+                        const color = s.breached ? '#ef4444' : s.passed ? '#22c55e' : '#f59e0b'
+                        return (
+                          <g key={`evt-${i}`}>
+                            <circle cx={x} cy={y} r={4} fill={color} fillOpacity={0.9} stroke="white" strokeWidth={1} />
+                          </g>
+                        )
+                      })}
+
+                      {/* Day axis labels */}
+                      {simRun.filter((_, i) => i % 5 === 0 || i === simRun.length - 1).map((s, _, arr) => {
+                        const i = simRun.indexOf(s)
+                        return (
+                          <text key={`d${s.day}`} x={xScale(i, simRun.length)} y={chartH - 4} fontSize={8} textAnchor="middle" fill="currentColor" fillOpacity={0.35}>
+                            D{s.day}
+                          </text>
+                        )
+                      })}
+                    </svg>
+                  )}
+                </div>
+
+                {/* Event log */}
+                {simRun && simRun.some(s => s.event) && (
+                  <div className="rounded-xl bg-card border border-border/50 overflow-hidden">
+                    <div className="px-5 py-3 border-b border-border/30 flex items-center gap-2">
+                      <Clock className="size-3.5 text-muted-foreground" />
+                      <h3 className="text-xs font-semibold">Event Log</h3>
+                      <span className="text-[10px] text-muted-foreground ml-auto">{simRun.filter(s => s.event).length} events</span>
+                    </div>
+                    <div className="max-h-52 overflow-y-auto divide-y divide-border/20">
+                      {simRun.filter(s => s.event).map(s => (
+                        <div key={s.day} className="flex items-center gap-3 px-5 py-2.5 hover:bg-muted/10 transition-colors">
+                          <div className={cn('text-[10px] font-bold tabular-nums shrink-0 w-10',
+                            s.breached ? 'text-loss' : s.passed ? 'text-profit' : 'text-muted-foreground'
+                          )}>D{s.day}</div>
+                          <div className="text-xs flex-1">{s.event}</div>
+                          <div className={cn('text-[10px] tabular-nums font-semibold shrink-0',
+                            s.pnl >= 0 ? 'text-profit' : 'text-loss'
+                          )}>{s.pnl >= 0 ? '+' : ''}{formatCurrency(s.pnl, 'USD', 0)}</div>
+                          <div className="text-[10px] tabular-nums text-muted-foreground shrink-0 w-24 text-right">{formatCurrency(s.equity, 'USD', 0)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Daily stats table — compact */}
+                {simRun && (
+                  <div className="rounded-xl bg-card border border-border/50 overflow-hidden">
+                    <div className="px-5 py-3 border-b border-border/30 flex items-center gap-2">
+                      <Filter className="size-3.5 text-muted-foreground" />
+                      <h3 className="text-xs font-semibold">Daily Breakdown</h3>
+                      <span className="text-[10px] text-muted-foreground ml-auto">{simRun.length} trading days</span>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-card z-10">
+                          <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/30">
+                            <th className="text-left px-5 py-2">Day</th>
+                            <th className="text-right px-3 py-2">P&L</th>
+                            <th className="text-right px-3 py-2">Equity</th>
+                            <th className="text-right px-3 py-2">DD%</th>
+                            <th className="text-right px-5 py-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {simRun.map(s => (
+                            <tr key={s.day} className={cn('border-b border-border/20 transition-colors',
+                              s.breached ? 'bg-loss/5 hover:bg-loss/10' : s.passed ? 'bg-profit/5 hover:bg-profit/10' : 'hover:bg-muted/10'
+                            )}>
+                              <td className="px-5 py-1.5 font-semibold tabular-nums">D{s.day}</td>
+                              <td className={cn('px-3 py-1.5 text-right tabular-nums font-semibold', s.pnl >= 0 ? 'text-profit' : 'text-loss')}>
+                                {s.pnl >= 0 ? '+' : ''}{formatCurrency(s.pnl, 'USD', 0)}
+                              </td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{formatCurrency(s.equity, 'USD', 0)}</td>
+                              <td className={cn('px-3 py-1.5 text-right tabular-nums', s.drawdownFromPeak > simMaxDrawdown * 0.7 ? 'text-loss font-semibold' : 'text-muted-foreground')}>
+                                {s.drawdownFromPeak.toFixed(1)}%
+                              </td>
+                              <td className="px-5 py-1.5 text-right">
+                                {s.breached ? <span className="text-loss text-[10px] font-bold">BREACHED</span>
+                                  : s.passed ? <span className="text-profit text-[10px] font-bold">PASSED</span>
+                                  : <span className="text-muted-foreground text-[10px]">active</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Info banner */}
+            <div className="rounded-xl bg-primary/5 border border-primary/15 px-4 py-3 text-xs text-muted-foreground flex items-start gap-2">
+              <Activity className="size-3.5 text-primary shrink-0 mt-0.5" />
+              <span><span className="font-semibold text-primary">Monte Carlo Simulation.</span>{' '}
+                Uses a seeded LCG pseudo-random engine to model realistic trader behavior with configurable volatility. Each seed produces a reproducible equity curve. Use different seeds to stress-test your challenge parameters across multiple trader profiles.</span>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Confirm modal */}
       {confirmModal && (

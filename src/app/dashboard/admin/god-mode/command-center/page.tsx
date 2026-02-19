@@ -30,6 +30,11 @@ import {
   CreditCard,
   Bell,
   Eye,
+  MonitorSmartphone,
+  MapPin,
+  Fingerprint,
+  LogOut,
+  Timer,
 } from 'lucide-react'
 import { cn, formatCurrency, timeAgo } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -276,7 +281,20 @@ function AccountSlideOver({ account, onClose }: { account: AdminAccount; onClose
 }
 
 // ─── Page Tabs ────────────────────────────────────────────────────────
-type Tab = 'overview' | 'users' | 'accounts' | 'platform'
+type Tab = 'overview' | 'users' | 'accounts' | 'platform' | 'sessions'
+
+// ─── Mock Live Sessions ───────────────────────────────────────────────
+const MOCK_SESSIONS = [
+  { id: 's1', userId: 'usr_4k2p', name: 'Alex Rivera', email: 'alex@example.com', role: 'trader', ip: '82.45.183.12', country: 'FR', city: 'Paris', device: 'Chrome 120 / macOS', startedAt: Date.now() - 4 * 60_000, lastActivity: Date.now() - 20_000, pages: 14, accountId: 'acc-0004', status: 'active' },
+  { id: 's2', userId: 'usr_8m9r', name: 'Jamie Chen', email: 'jamie@example.com', role: 'trader', ip: '78.192.44.201', country: 'GB', city: 'London', device: 'Safari 17 / iPhone', startedAt: Date.now() - 12 * 60_000, lastActivity: Date.now() - 55_000, pages: 7, accountId: 'acc-0012', status: 'active' },
+  { id: 's3', userId: 'usr_2n1k', name: 'Sam Patel', email: 'sam@example.com', role: 'trader', ip: '104.28.77.93', country: 'US', city: 'New York', device: 'Firefox 121 / Windows', startedAt: Date.now() - 28 * 60_000, lastActivity: Date.now() - 180_000, pages: 22, accountId: 'acc-0022', status: 'idle' },
+  { id: 's4', userId: 'usr_6z3w', name: 'Maria Torres', email: 'maria@example.com', role: 'trader', ip: '185.60.112.44', country: 'ES', city: 'Madrid', device: 'Chrome 119 / Android', startedAt: Date.now() - 2 * 60_000, lastActivity: Date.now() - 8_000, pages: 3, accountId: 'acc-0035', status: 'active' },
+  { id: 's5', userId: 'usr_9p7q', name: 'Chris Lee', email: 'chris@example.com', role: 'trader', ip: '203.0.113.45', country: 'AU', city: 'Sydney', device: 'Edge 120 / Windows', startedAt: Date.now() - 55 * 60_000, lastActivity: Date.now() - 320_000, pages: 31, accountId: 'acc-0041', status: 'idle' },
+  { id: 's6', userId: 'usr_3x8t', name: 'Admin Jules', email: 'jules@platform.com', role: 'admin', ip: '192.168.1.1', country: 'FR', city: 'Lyon', device: 'Chrome 120 / macOS', startedAt: Date.now() - 8 * 60_000, lastActivity: Date.now() - 2_000, pages: 48, accountId: null, status: 'active' },
+  { id: 's7', userId: 'usr_5b4n', name: 'Lucas Martin', email: 'lucas@example.com', role: 'trader', ip: '91.108.4.56', country: 'DE', city: 'Berlin', device: 'Chrome 118 / Linux', startedAt: Date.now() - 35 * 60_000, lastActivity: Date.now() - 900_000, pages: 9, accountId: 'acc-0089', status: 'inactive' },
+]
+
+const FLAG_MAP: Record<string, string> = { FR: '🇫🇷', GB: '🇬🇧', US: '🇺🇸', ES: '🇪🇸', AU: '🇦🇺', DE: '🇩🇪', JP: '🇯🇵', CA: '🇨🇦', BR: '🇧🇷', SG: '🇸🇬' }
 
 // ─── Mini Activity Feed (mock) ────────────────────────────────────────
 const ACTIVITY_FEED = [
@@ -386,11 +404,14 @@ export default function CommandCenterPage() {
     setTimeout(() => setIsRefreshing(false), 800)
   }
 
+  const activeSessions = MOCK_SESSIONS.filter(s => s.status === 'active').length
+
   const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
     { id: 'users', label: 'Users', icon: Users },
     { id: 'accounts', label: 'Accounts', icon: Activity },
     { id: 'platform', label: 'Platform Health', icon: Server },
+    { id: 'sessions', label: `Live Sessions${activeSessions > 0 ? ` (${activeSessions})` : ''}`, icon: MonitorSmartphone },
   ]
 
   return (
@@ -1001,6 +1022,222 @@ export default function CommandCenterPage() {
                   <span className="text-[10px] text-muted-foreground shrink-0">{e.time}</span>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════ TAB: LIVE SESSIONS ═══ */}
+      {activeTab === 'sessions' && (
+        <div className="flex flex-col gap-4">
+          {/* KPIs */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: 'Active Now', value: MOCK_SESSIONS.filter(s => s.status === 'active').length, color: 'text-profit', bg: 'border-profit/20' },
+              { label: 'Idle (>2min)', value: MOCK_SESSIONS.filter(s => s.status === 'idle').length, color: 'text-yellow-500', bg: 'border-yellow-500/20' },
+              { label: 'Total Online', value: MOCK_SESSIONS.filter(s => s.status !== 'inactive').length, color: 'text-foreground', bg: '' },
+              { label: 'Avg Session', value: '18m', color: 'text-primary', bg: '' },
+            ].map(s => (
+              <div key={s.label} className={`rounded-xl bg-card border ${s.bg || 'border-border/50'} p-4 text-center`}>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">{s.label}</div>
+                <div className={`text-2xl font-bold tabular-nums ${s.color}`}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Geo breakdown */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="rounded-xl bg-card border border-border/50 p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <MapPin className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Top Locations</span>
+              </div>
+              <div className="flex flex-col gap-2.5">
+                {Object.entries(
+                  MOCK_SESSIONS.reduce((acc, s) => {
+                    acc[s.country] = (acc[s.country] || 0) + 1
+                    return acc
+                  }, {} as Record<string, number>)
+                ).sort((a, b) => b[1] - a[1]).map(([code, count]) => (
+                  <div key={code} className="flex items-center gap-2">
+                    <span className="text-base w-6 shrink-0">{FLAG_MAP[code] ?? '🌍'}</span>
+                    <span className="text-xs font-medium flex-1">{code}</span>
+                    <div className="flex-1 h-1.5 bg-muted/20 rounded-full overflow-hidden mx-2">
+                      <div className="h-full bg-primary/60 rounded-full" style={{ width: `${(count / MOCK_SESSIONS.length) * 100}%` }} />
+                    </div>
+                    <span className="text-xs font-bold tabular-nums w-4 text-right">{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Device breakdown */}
+            <div className="rounded-xl bg-card border border-border/50 p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <MonitorSmartphone className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Devices</span>
+              </div>
+              {[
+                { label: 'Desktop', count: MOCK_SESSIONS.filter(s => !s.device.includes('iPhone') && !s.device.includes('Android')).length, color: 'bg-primary' },
+                { label: 'Mobile', count: MOCK_SESSIONS.filter(s => s.device.includes('iPhone') || s.device.includes('Android')).length, color: 'bg-blue-400' },
+              ].map(d => (
+                <div key={d.label} className="mb-3">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">{d.label}</span>
+                    <span className="font-semibold">{d.count} ({((d.count / MOCK_SESSIONS.length) * 100).toFixed(0)}%)</span>
+                  </div>
+                  <div className="h-2 bg-muted/20 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${d.color}`} style={{ width: `${(d.count / MOCK_SESSIONS.length) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+              <div className="mt-4 pt-3 border-t border-border/30 space-y-1">
+                {['Chrome', 'Safari', 'Firefox', 'Edge'].map(browser => {
+                  const cnt = MOCK_SESSIONS.filter(s => s.device.includes(browser)).length
+                  return (
+                    <div key={browser} className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">{browser}</span>
+                      <span className="font-medium">{cnt} session{cnt !== 1 ? 's' : ''}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Session activity heatmap (simplified) */}
+            <div className="rounded-xl bg-card border border-border/50 p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Timer className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Session Duration</span>
+              </div>
+              <div className="flex flex-col gap-2">
+                {MOCK_SESSIONS.slice().sort((a, b) => (b.startedAt - a.startedAt)).map(s => {
+                  const durationMs = Date.now() - s.startedAt
+                  const mins = Math.floor(durationMs / 60_000)
+                  const pct = Math.min(100, (mins / 60) * 100)
+                  return (
+                    <div key={s.id} className="flex items-center gap-2">
+                      <div className="size-5 rounded-full bg-muted flex items-center justify-center text-[9px] font-bold shrink-0">
+                        {s.name[0]}
+                      </div>
+                      <div className="flex-1 h-1.5 bg-muted/20 rounded-full overflow-hidden">
+                        <div
+                          className={cn('h-full rounded-full', s.status === 'active' ? 'bg-profit' : s.status === 'idle' ? 'bg-yellow-500' : 'bg-muted-foreground/30')}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] tabular-nums text-muted-foreground w-10 text-right">{mins}m</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Sessions table */}
+          <div className="rounded-xl bg-card border border-border/50">
+            <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-border/30">
+              <div className="flex items-center gap-2">
+                <Fingerprint className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Active Sessions</span>
+                <span className="text-[10px] text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded-full">{MOCK_SESSIONS.length} total</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <div className="size-1.5 rounded-full bg-profit animate-pulse" />
+                Live
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/30 bg-muted/20">
+                    <th className="text-left px-5 py-2.5">User</th>
+                    <th className="text-left px-3 py-2.5">Location</th>
+                    <th className="text-left px-3 py-2.5">Device</th>
+                    <th className="text-right px-3 py-2.5">Pages</th>
+                    <th className="text-right px-3 py-2.5">Duration</th>
+                    <th className="text-center px-3 py-2.5">Status</th>
+                    <th className="text-right px-5 py-2.5">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {MOCK_SESSIONS.map(session => {
+                    const durationMins = Math.floor((Date.now() - session.startedAt) / 60_000)
+                    const idleSecs = Math.floor((Date.now() - session.lastActivity) / 1_000)
+                    const statusColor = session.status === 'active' ? 'text-profit' : session.status === 'idle' ? 'text-yellow-500' : 'text-muted-foreground'
+                    const statusDot = session.status === 'active' ? 'bg-profit animate-pulse' : session.status === 'idle' ? 'bg-yellow-500' : 'bg-muted-foreground/30'
+                    return (
+                      <tr key={session.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className={cn(
+                              'size-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
+                              session.role === 'admin' ? 'bg-primary/15 text-primary' : 'bg-muted text-foreground'
+                            )}>
+                              {session.name[0]}
+                            </div>
+                            <div>
+                              <div className="font-medium flex items-center gap-1">
+                                {session.name}
+                                {session.role === 'admin' && <span className="text-[9px] bg-primary/10 text-primary px-1 rounded font-semibold">ADMIN</span>}
+                              </div>
+                              <div className="text-[10px] text-muted-foreground">{session.email}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <span>{FLAG_MAP[session.country] ?? '🌍'}</span>
+                            <div>
+                              <div className="font-medium">{session.city}</div>
+                              <div className="text-[10px] text-muted-foreground font-mono">{session.ip}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-muted-foreground text-[10px]">{session.device}</td>
+                        <td className="px-3 py-3 text-right font-semibold tabular-nums">{session.pages}</td>
+                        <td className="px-3 py-3 text-right">
+                          <div className="font-semibold tabular-nums">{durationMins}m</div>
+                          <div className={cn('text-[10px]', idleSecs > 120 ? 'text-yellow-500' : 'text-muted-foreground')}>
+                            idle {idleSecs < 60 ? `${idleSecs}s` : `${Math.floor(idleSecs / 60)}m`}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <div className={cn('size-1.5 rounded-full', statusDot)} />
+                            <span className={cn('text-[10px] font-semibold capitalize', statusColor)}>{session.status}</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              title="Impersonate"
+                              className="h-6 px-2 text-[10px] font-medium rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center gap-1"
+                            >
+                              <Eye className="size-3" /> View
+                            </button>
+                            <button
+                              title="Terminate session"
+                              className="size-6 rounded-lg bg-loss/10 hover:bg-loss/20 text-loss border border-loss/20 transition-colors flex items-center justify-center"
+                            >
+                              <LogOut className="size-3" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Security note */}
+          <div className="rounded-xl bg-yellow-500/5 border border-yellow-500/20 px-5 py-4 flex items-start gap-3">
+            <AlertCircle className="size-4 text-yellow-500 shrink-0 mt-0.5" />
+            <div className="text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">Session impersonation</span> lets you view the platform exactly as a specific trader sees it.
+              All impersonation actions are logged and auditable. Terminating a session will force the user to log in again.
             </div>
           </div>
         </div>

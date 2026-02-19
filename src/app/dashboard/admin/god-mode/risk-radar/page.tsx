@@ -23,6 +23,7 @@ import {
   Map,
   Clock,
   Flame,
+  Grid3X3,
 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAdminRiskMetrics, useAdminAccounts } from '@/lib/hooks'
@@ -191,7 +192,34 @@ function DrawdownBar({ label, count, max, color }: { label: string; count: numbe
   )
 }
 
-type Tab = 'live' | 'exposure' | 'breaches' | 'alerts'
+type Tab = 'live' | 'exposure' | 'breaches' | 'alerts' | 'heatmap'
+
+// ─── Heatmap Data (symbol × hour) ─────────────────────────────────────
+const HEATMAP_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'NAS100', 'SPX500', 'USOIL']
+const HEATMAP_HOURS = ['00', '02', '04', '06', '08', '10', '12', '14', '16', '18', '20', '22']
+
+// Simulated drawdown concentration: higher on market open hours and news times
+const HEATMAP_DATA: Record<string, Record<string, number>> = {
+  EURUSD: { '00': 1, '02': 2, '04': 3, '06': 7, '08': 12, '10': 18, '12': 9, '14': 21, '16': 14, '18': 6, '20': 3, '22': 2 },
+  GBPUSD: { '00': 1, '02': 1, '04': 2, '06': 8, '08': 15, '10': 22, '12': 11, '14': 19, '16': 16, '18': 7, '20': 4, '22': 2 },
+  USDJPY: { '00': 4, '02': 6, '04': 9, '06': 5, '08': 8, '10': 11, '12': 14, '14': 10, '16': 7, '18': 4, '20': 3, '22': 5 },
+  XAUUSD: { '00': 2, '02': 3, '04': 4, '06': 6, '08': 14, '10': 19, '12': 12, '14': 28, '16': 17, '18': 8, '20': 5, '22': 3 },
+  BTCUSD: { '00': 8, '02': 6, '04': 5, '06': 7, '08': 9, '10': 11, '12': 13, '14': 15, '16': 12, '18': 10, '20': 9, '22': 8 },
+  NAS100: { '00': 1, '02': 1, '04': 1, '06': 1, '08': 2, '10': 3, '12': 5, '14': 24, '16': 31, '18': 8, '20': 2, '22': 1 },
+  SPX500: { '00': 1, '02': 1, '04': 1, '06': 1, '08': 2, '10': 3, '12': 4, '14': 22, '16': 27, '18': 7, '20': 2, '22': 1 },
+  USOIL:  { '00': 2, '02': 3, '04': 3, '06': 4, '08': 11, '10': 16, '12': 9, '14': 13, '16': 10, '18': 6, '20': 4, '22': 3 },
+}
+
+// Correlation matrix (simplified)
+const CORR_SYMBOLS = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'NAS100']
+const CORR_MATRIX: number[][] = [
+  [ 1.00,  0.87, -0.62,  0.42, -0.08,  0.11],
+  [ 0.87,  1.00, -0.58,  0.38, -0.06,  0.09],
+  [-0.62, -0.58,  1.00, -0.31,  0.04, -0.07],
+  [ 0.42,  0.38, -0.31,  1.00,  0.22,  0.17],
+  [-0.08, -0.06,  0.04,  0.22,  1.00,  0.74],
+  [ 0.11,  0.09, -0.07,  0.17,  0.74,  1.00],
+]
 
 const MOCK_ALERTS = [
   { id: 'a1', level: 'danger', title: 'Account breached daily loss limit', account: 'acc_kp8m2x', time: '3m ago' },
@@ -258,6 +286,7 @@ export default function RiskRadarPage() {
     { id: 'exposure', label: 'Exposure', icon: Map },
     { id: 'breaches', label: `Breaches${breachedCount > 0 ? ` (${breachedCount})` : ''}`, icon: ShieldAlert },
     { id: 'alerts', label: 'Alert Log', icon: Bell },
+    { id: 'heatmap', label: 'Heatmap', icon: Grid3X3 },
   ]
 
   return (
@@ -693,6 +722,143 @@ export default function RiskRadarPage() {
                   </div>
                 )
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════ TAB: HEATMAP ═════════ */}
+      {activeTab === 'heatmap' && (
+        <div className="flex flex-col gap-5">
+          {/* Drawdown Concentration Heatmap */}
+          <div className="rounded-xl bg-card border border-border/50 p-5 overflow-x-auto">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <Grid3X3 className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Drawdown Concentration by Symbol × Hour (UTC)</span>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground mb-5">Number of accounts near or breaching loss limit per time window (last 30 days)</p>
+
+            <div className="min-w-max">
+              {/* Hour labels */}
+              <div className="flex gap-0 ml-20 mb-1">
+                {HEATMAP_HOURS.map(h => (
+                  <div key={h} className="w-10 text-center text-[9px] text-muted-foreground">{h}h</div>
+                ))}
+              </div>
+              {/* Rows */}
+              {HEATMAP_SYMBOLS.map(symbol => {
+                const row = HEATMAP_DATA[symbol]
+                const rowMax = Math.max(...HEATMAP_HOURS.map(h => row[h] ?? 0))
+                return (
+                  <div key={symbol} className="flex items-center gap-0 mb-0.5">
+                    <div className="w-20 text-[10px] font-semibold text-right pr-3 text-muted-foreground shrink-0">{symbol}</div>
+                    {HEATMAP_HOURS.map(h => {
+                      const v = row[h] ?? 0
+                      const intensity = rowMax > 0 ? v / rowMax : 0
+                      const bg = v === 0 ? 'bg-muted/10'
+                        : intensity > 0.8 ? 'bg-loss'
+                        : intensity > 0.5 ? 'bg-yellow-500'
+                        : intensity > 0.25 ? 'bg-yellow-400/50'
+                        : 'bg-profit/30'
+                      const textColor = intensity > 0.5 ? 'text-white' : intensity > 0.25 ? 'text-foreground' : 'text-muted-foreground'
+                      return (
+                        <div
+                          key={h}
+                          className={cn('w-10 h-9 flex items-center justify-center text-[10px] font-semibold rounded-sm mx-px transition-all', bg, textColor)}
+                          title={`${symbol} @ ${h}h UTC: ${v} accounts at risk`}
+                        >
+                          {v > 0 ? v : ''}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+              {/* Legend */}
+              <div className="flex items-center gap-3 mt-3 ml-20">
+                {[
+                  { color: 'bg-muted/10', label: '0' },
+                  { color: 'bg-profit/30', label: '1-5' },
+                  { color: 'bg-yellow-400/50', label: '6-12' },
+                  { color: 'bg-yellow-500', label: '13-20' },
+                  { color: 'bg-loss', label: '20+' },
+                ].map(l => (
+                  <div key={l.label} className="flex items-center gap-1.5">
+                    <div className={cn('w-4 h-4 rounded-sm', l.color)} />
+                    <span className="text-[10px] text-muted-foreground">{l.label}</span>
+                  </div>
+                ))}
+                <span className="text-[10px] text-muted-foreground ml-2">accounts at risk</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Correlation Matrix */}
+          <div className="rounded-xl bg-card border border-border/50 p-5 overflow-x-auto">
+            <div className="flex items-center gap-2 mb-1">
+              <BarChart3 className="size-4 text-muted-foreground" />
+              <span className="text-sm font-semibold">Symbol Correlation Matrix</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground mb-5">30-day return correlations — high positive correlations increase concentrated risk exposure</p>
+
+            <div className="min-w-max">
+              {/* Header row */}
+              <div className="flex gap-0 ml-20 mb-0.5">
+                {CORR_SYMBOLS.map(s => (
+                  <div key={s} className="w-14 text-center text-[9px] text-muted-foreground font-semibold">{s.slice(0, 6)}</div>
+                ))}
+              </div>
+              {CORR_MATRIX.map((row, ri) => (
+                <div key={ri} className="flex items-center gap-0 mb-0.5">
+                  <div className="w-20 text-[10px] font-semibold text-right pr-3 text-muted-foreground shrink-0">{CORR_SYMBOLS[ri]}</div>
+                  {row.map((val, ci) => {
+                    const isDiag = ri === ci
+                    const bg = isDiag ? 'bg-muted/40'
+                      : val > 0.7 ? 'bg-loss/70'
+                      : val > 0.4 ? 'bg-loss/30'
+                      : val > 0.1 ? 'bg-muted/20'
+                      : val < -0.4 ? 'bg-profit/40'
+                      : val < -0.1 ? 'bg-profit/20'
+                      : 'bg-muted/10'
+                    const textColor = isDiag ? 'text-muted-foreground'
+                      : Math.abs(val) > 0.5 ? 'text-foreground font-bold'
+                      : 'text-muted-foreground'
+                    return (
+                      <div
+                        key={ci}
+                        className={cn('w-14 h-9 flex items-center justify-center text-[10px] rounded-sm mx-px', bg, textColor)}
+                        title={`${CORR_SYMBOLS[ri]} / ${CORR_SYMBOLS[ci]}: ${val.toFixed(2)}`}
+                      >
+                        {isDiag ? '—' : val.toFixed(2)}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+              <div className="flex items-center gap-3 mt-3 ml-20">
+                {[
+                  { color: 'bg-loss/70', label: 'High +corr (>0.7)' },
+                  { color: 'bg-muted/20', label: 'Low corr' },
+                  { color: 'bg-profit/40', label: 'High -corr (<-0.4)' },
+                ].map(l => (
+                  <div key={l.label} className="flex items-center gap-1.5">
+                    <div className={cn('w-4 h-4 rounded-sm', l.color)} />
+                    <span className="text-[10px] text-muted-foreground">{l.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Risk Insight banner */}
+          <div className="rounded-xl bg-yellow-500/5 border border-yellow-500/20 px-5 py-4 flex items-start gap-3">
+            <AlertTriangle className="size-4 text-yellow-500 shrink-0 mt-0.5" />
+            <div className="text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">High-risk window</span>: 14h–16h UTC shows the highest breach concentration across all symbols.
+              EURUSD, GBPUSD, and XAUUSD are highly correlated — simultaneous adverse moves can cause cascading breaches.
+              Consider increasing monitoring frequency during US session open (14h–17h UTC).
             </div>
           </div>
         </div>

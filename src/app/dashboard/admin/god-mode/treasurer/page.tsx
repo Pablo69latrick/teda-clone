@@ -24,6 +24,10 @@ import {
   ChevronDown,
   ChevronRight,
   Activity,
+  Pencil,
+  Check,
+  Percent,
+  Settings2,
 } from 'lucide-react'
 import { cn, formatCurrency, timeAgo } from '@/lib/utils'
 import { useAdminStats } from '@/lib/hooks'
@@ -34,7 +38,6 @@ function Skeleton({ className }: { className?: string }) {
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────
-type Tab = 'overview' | 'payouts' | 'revenue' | 'history'
 type PayoutMethod = 'all' | 'bank' | 'crypto' | 'paypal'
 
 // ─── Mock payout queue ─────────────────────────────────────────────────
@@ -340,12 +343,36 @@ function PayoutRow({
   )
 }
 
+// ─── Fee Structure mock data ─────────────────────────────────────────────
+const INITIAL_FEE_TIERS = [
+  { id: 'f1', size: '$10,000', evalFee: 99, phase2Fee: 0, resetFee: 79, profitSplit: 80, maxScale: '$200,000', popular: false },
+  { id: 'f2', size: '$25,000', evalFee: 199, phase2Fee: 0, resetFee: 149, profitSplit: 80, maxScale: '$500,000', popular: true },
+  { id: 'f3', size: '$50,000', evalFee: 299, phase2Fee: 0, resetFee: 229, profitSplit: 85, maxScale: '$1,000,000', popular: false },
+  { id: 'f4', size: '$100,000', evalFee: 499, phase2Fee: 0, resetFee: 369, profitSplit: 85, maxScale: '$2,000,000', popular: false },
+  { id: 'f5', size: '$200,000', evalFee: 899, phase2Fee: 0, resetFee: 649, profitSplit: 90, maxScale: '$4,000,000', popular: false },
+]
+
+// Waterfall data: Revenue → Costs → Net
+const WATERFALL_ITEMS = [
+  { label: 'Gross Revenue', value: 412_800, type: 'start' as const },
+  { label: 'Payment Fees', value: -8_256, type: 'deduct' as const },
+  { label: 'Refunds', value: -4_128, type: 'deduct' as const },
+  { label: 'Chargebacks', value: -1_652, type: 'deduct' as const },
+  { label: 'Net Eval Revenue', value: 398_764, type: 'subtotal' as const },
+  { label: 'Trader Payouts', value: -71_000, type: 'deduct' as const },
+  { label: 'Platform COGS', value: -28_400, type: 'deduct' as const },
+  { label: 'Net Profit', value: 299_364, type: 'end' as const },
+]
+
 // ─── TABS ───────────────────────────────────────────────────────────────
+type Tab = 'overview' | 'payouts' | 'revenue' | 'history' | 'fees'
+
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Overview', icon: BarChart3 },
   { id: 'payouts', label: 'Payouts', icon: Clock },
   { id: 'revenue', label: 'Revenue', icon: TrendingUp },
   { id: 'history', label: 'History', icon: History },
+  { id: 'fees', label: 'Fee Structure', icon: Settings2 },
 ]
 
 // ─── Main Page ──────────────────────────────────────────────────────────
@@ -422,6 +449,31 @@ export default function TreasurerPage() {
   const payoutRatioPct = stats?.revenue_month ? ((MONTHLY.at(-1)?.payouts ?? 0) / stats.revenue_month * 100) : 0
 
   const pendingCount = filteredPayouts.length
+
+  // Fee structure state
+  const [feeTiers, setFeeTiers] = useState(INITIAL_FEE_TIERS)
+  const [editingCell, setEditingCell] = useState<{ tierId: string; field: string } | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [feeToast, setFeeToast] = useState<string | null>(null)
+
+  const startEdit = (tierId: string, field: string, currentVal: number | string) => {
+    setEditingCell({ tierId, field })
+    setEditDraft(String(currentVal))
+  }
+  const commitEdit = () => {
+    if (!editingCell) return
+    const num = parseFloat(editDraft)
+    if (!isNaN(num)) {
+      setFeeTiers(prev => prev.map(t =>
+        t.id === editingCell.tierId
+          ? { ...t, [editingCell.field]: num }
+          : t
+      ))
+      setFeeToast(`✅ Updated ${editingCell.field} on ${feeTiers.find(t => t.id === editingCell.tierId)?.size}`)
+      setTimeout(() => setFeeToast(null), 3000)
+    }
+    setEditingCell(null)
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -891,6 +943,185 @@ export default function TreasurerPage() {
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ─── FEES ─────────────────────────────────────────────────────── */}
+      {activeTab === 'fees' && (
+        <div className="flex flex-col gap-5">
+          {/* Summary KPIs */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {[
+              { label: 'Avg Eval Fee', value: `$${(feeTiers.reduce((s, t) => s + t.evalFee, 0) / feeTiers.length).toFixed(0)}`, icon: DollarSign, cls: 'text-primary' },
+              { label: 'Avg Profit Split', value: `${(feeTiers.reduce((s, t) => s + t.profitSplit, 0) / feeTiers.length).toFixed(0)}%`, icon: Percent, cls: 'text-profit' },
+              { label: 'Tiers Active', value: feeTiers.length.toString(), icon: Settings2, cls: 'text-foreground' },
+              { label: 'Avg Reset Fee', value: `$${(feeTiers.reduce((s, t) => s + t.resetFee, 0) / feeTiers.length).toFixed(0)}`, icon: ArrowUpRight, cls: 'text-yellow-500' },
+            ].map(s => (
+              <div key={s.label} className="flex flex-col gap-2 rounded-xl bg-card border border-border/50 p-4">
+                <div className="flex items-center gap-2">
+                  <div className="size-7 rounded-lg bg-muted/60 flex items-center justify-center">
+                    <s.icon className={cn('size-3.5', s.cls)} />
+                  </div>
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{s.label}</span>
+                </div>
+                <div className={cn('text-2xl font-bold tabular-nums', s.cls)}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Fee tier table — inline editable */}
+          <div className="rounded-xl bg-card border border-border/50 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border/30">
+              <div className="flex items-center gap-2">
+                <Settings2 className="size-4 text-muted-foreground" />
+                <span className="text-sm font-semibold">Fee Tiers</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <Pencil className="size-3" />
+                Click any cell to edit
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/30 bg-muted/20">
+                    <th className="text-left px-5 py-3">Account Size</th>
+                    <th className="text-right px-3 py-3">Eval Fee ($)</th>
+                    <th className="text-right px-3 py-3">Reset Fee ($)</th>
+                    <th className="text-right px-3 py-3">Profit Split (%)</th>
+                    <th className="text-right px-5 py-3">Max Scale</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {feeTiers.map(tier => {
+                    const editableCell = (field: 'evalFee' | 'resetFee' | 'profitSplit', val: number) => {
+                      const isEditing = editingCell?.tierId === tier.id && editingCell?.field === field
+                      return (
+                        <td className="px-3 py-3 text-right">
+                          {isEditing ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <input
+                                autoFocus
+                                value={editDraft}
+                                onChange={e => setEditDraft(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingCell(null) }}
+                                className="w-20 text-xs bg-muted/40 border border-primary/40 rounded px-2 py-1 text-right focus:outline-none"
+                              />
+                              <button onClick={commitEdit} className="size-5 flex items-center justify-center rounded bg-profit/20 text-profit hover:bg-profit/30 transition-colors">
+                                <Check className="size-3" />
+                              </button>
+                              <button onClick={() => setEditingCell(null)} className="size-5 flex items-center justify-center rounded bg-muted hover:bg-muted/80 transition-colors text-muted-foreground">
+                                <X className="size-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => startEdit(tier.id, field, val)}
+                              className="group flex items-center justify-end gap-1.5 w-full hover:text-primary transition-colors tabular-nums font-semibold"
+                            >
+                              {field === 'profitSplit' ? `${val}%` : `$${val}`}
+                              <Pencil className="size-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+                            </button>
+                          )}
+                        </td>
+                      )
+                    }
+                    return (
+                      <tr key={tier.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-foreground">{tier.size}</span>
+                            {tier.popular && (
+                              <span className="text-[9px] bg-primary/10 text-primary border border-primary/20 px-1.5 py-0.5 rounded-full font-semibold">Popular</span>
+                            )}
+                          </div>
+                        </td>
+                        {editableCell('evalFee', tier.evalFee)}
+                        {editableCell('resetFee', tier.resetFee)}
+                        {editableCell('profitSplit', tier.profitSplit)}
+                        <td className="px-5 py-3 text-right text-muted-foreground font-medium">{tier.maxScale}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Waterfall net margin chart */}
+          <div className="rounded-xl bg-card border border-border/50 p-5">
+            <div className="flex items-center gap-2 mb-1">
+              <BarChart3 className="size-4 text-muted-foreground" />
+              <span className="text-sm font-semibold">Net Margin Waterfall — December</span>
+            </div>
+            <p className="text-[10px] text-muted-foreground mb-6">Revenue breakdown from gross to net profit after all deductions</p>
+
+            <div className="flex flex-col gap-2">
+              {(() => {
+                let runningBase = 0
+                const maxAbs = Math.max(...WATERFALL_ITEMS.map(i => Math.abs(i.value)))
+                return WATERFALL_ITEMS.map((item, idx) => {
+                  const isStart = item.type === 'start'
+                  const isEnd = item.type === 'end'
+                  const isSubtotal = item.type === 'subtotal'
+                  const isDeduct = item.type === 'deduct'
+
+                  const barWidth = (Math.abs(item.value) / maxAbs) * 100
+
+                  if (isStart || isSubtotal) runningBase = 0
+
+                  const offsetPct = isDeduct ? (runningBase / maxAbs) * 100 : 0
+                  if (isDeduct) runningBase += item.value
+
+                  const color = isStart ? 'bg-primary' : isEnd ? 'bg-profit' : isSubtotal ? 'bg-blue-500' : 'bg-loss'
+                  const textColor = isStart ? 'text-primary' : isEnd ? 'text-profit' : isSubtotal ? 'text-blue-500' : 'text-loss'
+
+                  return (
+                    <div key={idx} className="flex items-center gap-3">
+                      <div className="w-36 text-[10px] text-right text-muted-foreground shrink-0">{item.label}</div>
+                      <div className="flex-1 h-7 bg-muted/10 rounded overflow-hidden relative">
+                        {isDeduct && offsetPct > 0 && (
+                          <div className="absolute left-0 h-full bg-transparent" style={{ width: `${offsetPct}%` }} />
+                        )}
+                        <div
+                          className={cn('h-full rounded flex items-center px-2 absolute', color)}
+                          style={{
+                            left: isDeduct ? `${offsetPct}%` : '0%',
+                            width: `${barWidth}%`,
+                          }}
+                        />
+                      </div>
+                      <div className={cn('w-28 text-xs font-bold tabular-nums text-right shrink-0', textColor)}>
+                        {item.value < 0 ? '-' : ''}{formatCurrency(Math.abs(item.value))}
+                      </div>
+                    </div>
+                  )
+                })
+              })()}
+            </div>
+
+            <div className="mt-5 pt-4 border-t border-border/30 grid grid-cols-3 gap-4 text-center">
+              <div>
+                <div className="text-[10px] text-muted-foreground mb-0.5">Gross Revenue</div>
+                <div className="font-bold text-sm text-primary tabular-nums">{formatCurrency(WATERFALL_ITEMS[0].value)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-muted-foreground mb-0.5">Total Deductions</div>
+                <div className="font-bold text-sm text-loss tabular-nums">{formatCurrency(Math.abs(WATERFALL_ITEMS.filter(i => i.type === 'deduct').reduce((s, i) => s + i.value, 0)))}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-muted-foreground mb-0.5">Net Profit</div>
+                <div className="font-bold text-sm text-profit tabular-nums">{formatCurrency(WATERFALL_ITEMS.at(-1)!.value)}</div>
+              </div>
+            </div>
+          </div>
+
+          {feeToast && (
+            <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-foreground text-background px-4 py-3 rounded-xl shadow-2xl text-sm font-medium">
+              <div className="size-2 rounded-full bg-profit" />
+              {feeToast}
+            </div>
+          )}
         </div>
       )}
 
