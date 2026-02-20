@@ -2,10 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import { useSWRConfig } from 'swr'
-import { ChevronDown, Info, CheckCircle, XCircle } from 'lucide-react'
+import { ChevronDown, CheckCircle, XCircle, Shield } from 'lucide-react'
 import { cn, formatCurrency, calcRequiredMargin } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { useInstruments } from '@/lib/hooks'
+import { useInstruments, useTradingData } from '@/lib/hooks'
 import type { PlaceOrderRequest } from '@/types'
 
 interface OrderFormPanelProps {
@@ -13,43 +13,62 @@ interface OrderFormPanelProps {
   accountId: string
 }
 
+type OrderMode = 'market' | 'pending'
 type OrderSide = 'long' | 'short'
-type OrderType = 'market' | 'limit' | 'stop'
+type PendingType = 'limit' | 'stop'
 
 export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
-  const [quantity, setQuantity] = useState('0.00')
+  const [quantity, setQuantity] = useState('0.01')
   const [leverage, setLeverage] = useState(10)
-  const [orderType, setOrderType] = useState<OrderType>('market')
-  const [showSlTp, setShowSlTp] = useState(false)
+  const [orderMode, setOrderMode] = useState<OrderMode>('market')
+  const [pendingType, setPendingType] = useState<PendingType>('limit')
+  const [showSl, setShowSl] = useState(false)
+  const [showTp, setShowTp] = useState(false)
   const [slPrice, setSlPrice] = useState('')
   const [tpPrice, setTpPrice] = useState('')
   const [limitPrice, setLimitPrice] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+  const [showLeverage, setShowLeverage] = useState(false)
 
   const { mutate } = useSWRConfig()
   const { data: instruments } = useInstruments()
+  const { data: tradingData } = useTradingData(accountId)
 
-  // Find the current instrument matching the selected symbol
   const instrument = instruments?.find(i => i.symbol === symbol)
   const currentPrice = instrument?.current_price ?? instrument?.mark_price ?? 0
+  const bidPrice = instrument?.current_bid ?? currentPrice
+  const askPrice = instrument?.current_ask ?? currentPrice
   const maxLev = instrument?.max_leverage ?? 50
-  const fundingRate = instrument?.funding_rate ?? 0
-  const nextFundingTime = instrument?.next_funding_time ?? (Date.now() + 4 * 60 * 60 * 1000)
   const priceDecimals = instrument?.price_decimals ?? 5
 
-  // Clamp leverage when switching symbols (different max_leverage)
+  const account = tradingData?.account
+  const availableMargin = account?.available_margin ?? 0
+
   useEffect(() => {
     if (leverage > maxLev) setLeverage(maxLev)
   }, [maxLev, leverage])
 
   const qty = parseFloat(quantity) || 0
   const requiredMargin = calcRequiredMargin(qty, currentPrice, leverage)
+  const marginPct = availableMargin > 0 ? (requiredMargin / availableMargin) * 100 : 0
+
+  const slPriceNum = parseFloat(slPrice) || 0
+  const tpPriceNum = parseFloat(tpPrice) || 0
+
+  const calcSlTpPnl = (targetPrice: number, side: OrderSide) => {
+    if (!targetPrice || !currentPrice || qty === 0) return { amount: 0, pct: 0 }
+    const diff = side === 'long'
+      ? (targetPrice - currentPrice) * qty * leverage
+      : (currentPrice - targetPrice) * qty * leverage
+    const pct = requiredMargin > 0 ? (diff / requiredMargin) * 100 : 0
+    return { amount: diff, pct }
+  }
 
   const handleQuantityChange = (delta: number) => {
     const current = parseFloat(quantity) || 0
     const step = instrument?.min_order_size ?? 0.01
-    setQuantity(Math.max(0, current + delta * step).toFixed(instrument?.qty_decimals ?? 2))
+    setQuantity(Math.max(step, current + delta * step).toFixed(instrument?.qty_decimals ?? 2))
   }
 
   const showToast = (type: 'success' | 'error', msg: string) => {
@@ -59,20 +78,23 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
 
   const handlePlaceOrder = async (side: OrderSide) => {
     if (qty === 0 || submitting) return
+    const isLimit = orderMode === 'pending'
     const parsedLimit = limitPrice ? parseFloat(limitPrice) : undefined
-    if (orderType !== 'market' && !parsedLimit) return
+    if (isLimit && !parsedLimit) return
+
+    const effectiveOrderType = orderMode === 'market' ? 'market' : pendingType
 
     const payload: PlaceOrderRequest = {
       account_id: accountId,
       symbol,
       direction: side,
-      order_type: orderType,
+      order_type: effectiveOrderType,
       quantity: qty,
       leverage,
       margin_mode: 'cross',
       ...(parsedLimit ? { price: parsedLimit } : {}),
-      ...(tpPrice ? { tp_price: parseFloat(tpPrice) } : {}),
-      ...(slPrice ? { sl_price: parseFloat(slPrice) } : {}),
+      ...(showTp && tpPrice ? { tp_price: parseFloat(tpPrice) } : {}),
+      ...(showSl && slPrice ? { sl_price: parseFloat(slPrice) } : {}),
     }
 
     setSubmitting(true)
@@ -89,19 +111,17 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
       }
       const order = await res.json()
       const filledMsg = order.status === 'filled'
-        ? `${side.toUpperCase()} ${qty} ${symbol} filled @ market`
-        : `${side.toUpperCase()} ${qty} ${symbol} order placed`
+        ? `${side.toUpperCase()} ${qty} ${symbol} filled @ ${orderMode === 'market' ? 'market' : parsedLimit}`
+        : `${side.toUpperCase()} ${qty} ${symbol} ${effectiveOrderType} order placed`
       showToast('success', filledMsg)
 
-      // UX #5: Immediately invalidate SWR caches so positions/account update
-      // without waiting for the next 2s poll
       mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
       mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
       mutate('/api/proxy/actions/accounts')
       mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
 
-      // UX #6: Reset form fields after successful order
-      setQuantity('0.00')
+      setQuantity(instrument?.min_order_size?.toString() ?? '0.01')
       setLimitPrice('')
       setSlPrice('')
       setTpPrice('')
@@ -112,255 +132,272 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
     }
   }
 
-  // Countdown to next funding
-  const [nextFunding, setNextFunding] = useState('')
-  useEffect(() => {
-    const tick = () => {
-      const diff = nextFundingTime - Date.now()
-      if (diff <= 0) { setNextFunding('00:00:00'); return }
-      const h = Math.floor(diff / 3_600_000)
-      const m = Math.floor((diff % 3_600_000) / 60_000)
-      const s = Math.floor((diff % 60_000) / 1_000)
-      setNextFunding(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`)
-    }
-    tick()
-    const id = setInterval(tick, 1_000)
-    return () => clearInterval(id)
-  }, [nextFundingTime])
+  const isDisabled = qty === 0 || submitting || (orderMode === 'pending' && !limitPrice)
 
   return (
     <div className="flex flex-col bg-card">
-      {/* Symbol header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
-        <div className="flex items-center gap-1.5">
-          <div className="w-4 h-4 rounded-full bg-muted flex items-center justify-center text-[8px] font-bold">
-            {symbol[0]}
-          </div>
-          <span className="text-xs font-semibold text-foreground">{symbol}</span>
-          <Info className="size-3 text-muted-foreground" />
-        </div>
-        <div className="flex items-center gap-1">
-          <button className="px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-border/50 transition-colors">
-            Risk
-          </button>
+      {/* Mode toggle: MARKET / PENDING */}
+      <div className="flex items-center border-b border-border/50">
+        {(['market', 'pending'] as OrderMode[]).map(mode => (
           <button
-            className="px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-border/50 transition-colors"
-            onClick={() => setShowSlTp(v => !v)}
-          >
-            SL
-          </button>
-          <button
-            className="px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-border/50 transition-colors"
-            onClick={() => setShowSlTp(v => !v)}
-          >
-            TP
-          </button>
-          <button className="p-0.5 text-muted-foreground hover:text-foreground transition-colors">
-            <ChevronDown className="size-3" />
-          </button>
-        </div>
-      </div>
-
-      {/* Price + Init margin display */}
-      <div className="px-3 py-1.5 border-b border-border/50 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">
-          Init Margin:{' '}
-          <span className="text-foreground font-medium">
-            {formatCurrency(requiredMargin)} ({leverage}x)
-          </span>
-        </span>
-        {currentPrice > 0 && (
-          <span className="text-[10px] font-medium tabular-nums text-muted-foreground">
-            ${currentPrice.toFixed(priceDecimals)}
-          </span>
-        )}
-      </div>
-
-      {/* Order type selector */}
-      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/50">
-        {(['market', 'limit', 'stop'] as OrderType[]).map(type => (
-          <button
-            key={type}
-            onClick={() => setOrderType(type)}
+            key={mode}
+            onClick={() => setOrderMode(mode)}
             className={cn(
-              'px-2 py-0.5 rounded text-xs font-medium capitalize transition-colors',
-              orderType === type
-                ? 'bg-muted text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+              'flex-1 py-2 text-xs font-semibold uppercase tracking-wider transition-colors text-center',
+              orderMode === mode
+                ? 'text-foreground border-b-2 border-primary bg-primary/5'
+                : 'text-muted-foreground hover:text-foreground'
             )}
           >
-            {type}
+            {mode === 'market' ? 'Market' : 'Pending'}
           </button>
         ))}
       </div>
 
-      {/* Quantity input */}
-      <div className="px-3 py-2 border-b border-border/50">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Size (lots)</span>
-          {instrument && (
-            <span className="text-[10px] text-muted-foreground">
-              min {instrument.min_order_size}
-            </span>
-          )}
+      {/* Pending sub-type */}
+      {orderMode === 'pending' && (
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/50">
+          {(['limit', 'stop'] as PendingType[]).map(type => (
+            <button
+              key={type}
+              onClick={() => setPendingType(type)}
+              className={cn(
+                'px-2.5 py-0.5 rounded text-[10px] font-medium capitalize transition-colors',
+                pendingType === type
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+              )}
+            >
+              {type}
+            </button>
+          ))}
         </div>
-        <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-border/50">
-          <button
-            onClick={() => handleQuantityChange(-1)}
-            className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors"
-          >
-            −
-          </button>
-          <input
-            type="text"
-            value={quantity}
-            onChange={e => setQuantity(e.target.value)}
-            className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums"
-          />
-          <button
-            onClick={() => handleQuantityChange(1)}
-            className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors"
-          >
-            +
-          </button>
-        </div>
-      </div>
+      )}
 
-      {/* Price input (for limit/stop) */}
-      {orderType !== 'market' && (
+      {/* Price input (for pending orders) */}
+      {orderMode === 'pending' && (
         <div className="px-3 py-2 border-b border-border/50">
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-              {orderType === 'stop' ? 'Stop Price' : 'Limit Price'}
+              {pendingType === 'stop' ? 'Stop Price' : 'Limit Price'}
             </span>
-            <span className="text-[10px] text-muted-foreground">{formatCurrency(currentPrice, 'USD', priceDecimals)}</span>
+            <button
+              onClick={() => setLimitPrice(currentPrice.toFixed(priceDecimals))}
+              className="text-[10px] text-primary hover:text-primary/80 transition-colors"
+            >
+              Current: {currentPrice.toFixed(priceDecimals)}
+            </button>
           </div>
-          <div className="bg-muted/30 rounded-md border border-border/50 px-2 py-1.5">
+          <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-border/50">
+            <button
+              onClick={() => {
+                const v = parseFloat(limitPrice) || currentPrice
+                const step = instrument?.tick_size ?? 0.01
+                setLimitPrice((v - step).toFixed(priceDecimals))
+              }}
+              className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors"
+            >−</button>
             <input
               type="text"
               value={limitPrice}
               onChange={e => setLimitPrice(e.target.value)}
-              placeholder={currentPrice > 0 ? currentPrice.toFixed(priceDecimals) : '0.00000'}
-              className="w-full bg-transparent text-sm text-foreground focus:outline-none tabular-nums"
+              placeholder={currentPrice.toFixed(priceDecimals)}
+              className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums"
             />
+            <button
+              onClick={() => {
+                const v = parseFloat(limitPrice) || currentPrice
+                const step = instrument?.tick_size ?? 0.01
+                setLimitPrice((v + step).toFixed(priceDecimals))
+              }}
+              className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors"
+            >+</button>
           </div>
         </div>
       )}
 
-      {/* Leverage slider */}
+      {/* Quantity input */}
       <div className="px-3 py-2 border-b border-border/50">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Leverage</span>
-          <span className="text-xs font-semibold text-foreground">{leverage}×</span>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Volume (lots)</span>
+          {instrument && (
+            <span className="text-[10px] text-muted-foreground">min {instrument.min_order_size}</span>
+          )}
         </div>
-        <input
-          type="range"
-          min={1}
-          max={maxLev}
-          value={leverage}
-          onChange={e => setLeverage(Number(e.target.value))}
-          className="w-full h-1 rounded-full accent-primary cursor-pointer"
-        />
-        <div className="flex justify-between text-[9px] text-muted-foreground mt-1">
-          <span>1×</span>
-          <span>{Math.round(maxLev * 0.25)}×</span>
-          <span>{Math.round(maxLev * 0.5)}×</span>
-          <span>{maxLev}×</span>
+        <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-border/50">
+          <button onClick={() => handleQuantityChange(-1)}
+            className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors">−</button>
+          <input type="text" value={quantity} onChange={e => setQuantity(e.target.value)}
+            className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums" />
+          <button onClick={() => handleQuantityChange(1)}
+            className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors">+</button>
+        </div>
+        <div className="flex items-center gap-1 mt-1.5">
+          {[0.01, 0.05, 0.1, 0.5, 1].map(q => (
+            <button key={q} onClick={() => setQuantity(q.toFixed(instrument?.qty_decimals ?? 2))}
+              className={cn(
+                'flex-1 py-0.5 rounded text-[9px] font-medium transition-colors border',
+                parseFloat(quantity) === q
+                  ? 'bg-primary/10 text-primary border-primary/30'
+                  : 'border-border/40 text-muted-foreground hover:text-foreground hover:border-border'
+              )}>
+              {q}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* SL/TP (collapsible) */}
-      {showSlTp && (
-        <div className="px-3 py-2 border-b border-border/50 flex flex-col gap-2">
-          <div>
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider block mb-1">Stop Loss</span>
-            <div className="bg-muted/30 rounded-md border border-loss/30 px-2 py-1.5">
-              <input
-                type="text"
-                value={slPrice}
-                onChange={e => setSlPrice(e.target.value)}
-                placeholder="0.00"
-                className="w-full bg-transparent text-sm text-foreground focus:outline-none tabular-nums"
-              />
-            </div>
+      {/* SL / TP toggle buttons */}
+      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/50">
+        <button onClick={() => setShowSl(v => !v)}
+          className={cn(
+            'flex-1 py-1 rounded text-[10px] font-semibold uppercase tracking-wider transition-all border',
+            showSl ? 'bg-loss/10 text-loss border-loss/30' : 'text-muted-foreground border-border/50 hover:text-foreground hover:border-border'
+          )}>SL</button>
+        <button onClick={() => setShowTp(v => !v)}
+          className={cn(
+            'flex-1 py-1 rounded text-[10px] font-semibold uppercase tracking-wider transition-all border',
+            showTp ? 'bg-profit/10 text-profit border-profit/30' : 'text-muted-foreground border-border/50 hover:text-foreground hover:border-border'
+          )}>TP</button>
+        <button onClick={() => { setShowSl(v => !v); setShowTp(v => !v) }}
+          className={cn(
+            'px-2 py-1 rounded text-[10px] font-medium transition-all border',
+            showSl && showTp ? 'bg-primary/10 text-primary border-primary/30' : 'text-muted-foreground border-border/50 hover:text-foreground hover:border-border'
+          )}
+          title="Toggle both SL & TP">R:R</button>
+      </div>
+
+      {/* SL input */}
+      {showSl && (
+        <div className="px-3 py-2 border-b border-border/50">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-loss uppercase tracking-wider font-semibold">Stop Loss</span>
+            {slPriceNum > 0 && (
+              <span className="text-[10px] text-loss tabular-nums">
+                {calcSlTpPnl(slPriceNum, 'long').amount < 0 ? '' : '+'}
+                {formatCurrency(calcSlTpPnl(slPriceNum, 'long').amount)}
+                {' '}/ {calcSlTpPnl(slPriceNum, 'long').pct.toFixed(1)}%
+              </span>
+            )}
           </div>
-          <div>
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider block mb-1">Take Profit</span>
-            <div className="bg-muted/30 rounded-md border border-profit/30 px-2 py-1.5">
-              <input
-                type="text"
-                value={tpPrice}
-                onChange={e => setTpPrice(e.target.value)}
-                placeholder="0.00"
-                className="w-full bg-transparent text-sm text-foreground focus:outline-none tabular-nums"
-              />
-            </div>
+          <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-loss/30">
+            <button onClick={() => { const v = parseFloat(slPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; setSlPrice((v - step).toFixed(priceDecimals)) }}
+              className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm">−</button>
+            <input type="text" value={slPrice} onChange={e => setSlPrice(e.target.value)}
+              placeholder={currentPrice > 0 ? (currentPrice * 0.99).toFixed(priceDecimals) : '0.00'}
+              className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums" />
+            <button onClick={() => { const v = parseFloat(slPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; setSlPrice((v + step).toFixed(priceDecimals)) }}
+              className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm">+</button>
           </div>
         </div>
       )}
 
-      {/* Toast notification */}
+      {/* TP input */}
+      {showTp && (
+        <div className="px-3 py-2 border-b border-border/50">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-profit uppercase tracking-wider font-semibold">Take Profit</span>
+            {tpPriceNum > 0 && (
+              <span className="text-[10px] text-profit tabular-nums">
+                +{formatCurrency(calcSlTpPnl(tpPriceNum, 'long').amount)}
+                {' '}/ +{calcSlTpPnl(tpPriceNum, 'long').pct.toFixed(1)}%
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-profit/30">
+            <button onClick={() => { const v = parseFloat(tpPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; setTpPrice((v - step).toFixed(priceDecimals)) }}
+              className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm">−</button>
+            <input type="text" value={tpPrice} onChange={e => setTpPrice(e.target.value)}
+              placeholder={currentPrice > 0 ? (currentPrice * 1.01).toFixed(priceDecimals) : '0.00'}
+              className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums" />
+            <button onClick={() => { const v = parseFloat(tpPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; setTpPrice((v + step).toFixed(priceDecimals)) }}
+              className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm">+</button>
+          </div>
+        </div>
+      )}
+
+      {/* Leverage (collapsible) */}
+      <div className="px-3 py-2 border-b border-border/50">
+        <button onClick={() => setShowLeverage(v => !v)} className="flex items-center justify-between w-full">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Leverage</span>
+          <div className="flex items-center gap-1">
+            <span className="text-xs font-semibold text-foreground">{leverage}×</span>
+            <ChevronDown className={cn('size-3 text-muted-foreground transition-transform', showLeverage && 'rotate-180')} />
+          </div>
+        </button>
+        {showLeverage && (
+          <div className="mt-2">
+            <input type="range" min={1} max={maxLev} value={leverage}
+              onChange={e => setLeverage(Number(e.target.value))}
+              className="w-full h-1 rounded-full accent-primary cursor-pointer" />
+            <div className="flex justify-between text-[9px] text-muted-foreground mt-1">
+              <span>1×</span>
+              {[0.25, 0.5, 0.75].map(frac => (
+                <button key={frac} onClick={() => setLeverage(Math.round(maxLev * frac))}
+                  className="hover:text-foreground transition-colors">{Math.round(maxLev * frac)}×</button>
+              ))}
+              <span>{maxLev}×</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Init Margin info */}
+      <div className="px-3 py-1.5 border-b border-border/50">
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="text-muted-foreground flex items-center gap-1">
+            <Shield className="size-2.5" /> Init. Margin
+          </span>
+          <span className="text-foreground font-medium tabular-nums">
+            {formatCurrency(requiredMargin)}
+            {marginPct > 0 && (
+              <span className={cn('ml-1', marginPct > 80 ? 'text-loss' : 'text-muted-foreground')}>
+                ({marginPct.toFixed(1)}%)
+              </span>
+            )}
+          </span>
+        </div>
+        {qty > 0 && currentPrice > 0 && (
+          <div className="flex items-center justify-between text-[10px] mt-0.5">
+            <span className="text-muted-foreground">Exposure</span>
+            <span className="text-muted-foreground tabular-nums">{formatCurrency(qty * currentPrice)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Toast */}
       {toast && (
         <div className={cn(
-          'mx-2 mb-1 px-3 py-2 rounded-lg border text-xs flex items-center gap-2 transition-all',
-          toast.type === 'success'
-            ? 'bg-profit/10 border-profit/30 text-profit'
-            : 'bg-loss/10 border-loss/30 text-loss'
+          'mx-2 my-1 px-3 py-2 rounded-lg border text-xs flex items-center gap-2 transition-all',
+          toast.type === 'success' ? 'bg-profit/10 border-profit/30 text-profit' : 'bg-loss/10 border-loss/30 text-loss'
         )}>
-          {toast.type === 'success'
-            ? <CheckCircle className="size-3.5 shrink-0" />
-            : <XCircle className="size-3.5 shrink-0" />
-          }
+          {toast.type === 'success' ? <CheckCircle className="size-3.5 shrink-0" /> : <XCircle className="size-3.5 shrink-0" />}
           <span className="truncate">{toast.msg}</span>
         </div>
       )}
 
-      {/* Short / Long buttons */}
-      <div className="grid grid-cols-7 gap-1 p-2">
-        <Button
-          variant="short"
-          data-action="short"
-          onClick={() => handlePlaceOrder('short')}
-          disabled={qty === 0 || submitting || (orderType !== 'market' && !limitPrice)}
-          className="col-span-3 h-10 text-sm font-semibold"
-        >
-          {submitting ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Short'}
+      {/* SELL / BUY buttons with bid/ask prices */}
+      <div className="grid grid-cols-2 gap-1.5 p-2">
+        <Button variant="short" data-action="short" onClick={() => handlePlaceOrder('short')} disabled={isDisabled}
+          className="h-12 flex flex-col items-center justify-center gap-0 rounded-lg">
+          {submitting ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (
+            <><span className="text-xs font-bold tracking-wide">SELL</span>
+              <span className="text-[10px] font-medium tabular-nums opacity-80">{bidPrice > 0 ? bidPrice.toFixed(priceDecimals) : '—'}</span></>
+          )}
         </Button>
-        {/* Center: quantity display */}
-        <div className="col-span-1 flex items-center justify-center">
-          <span className="text-[10px] text-muted-foreground text-center leading-tight tabular-nums">
-            {qty.toFixed(instrument?.qty_decimals ?? 2)}
-            <br />
-            <span className="text-[8px]">lots</span>
-          </span>
-        </div>
-        <Button
-          variant="long"
-          data-action="long"
-          onClick={() => handlePlaceOrder('long')}
-          disabled={qty === 0 || submitting || (orderType !== 'market' && !limitPrice)}
-          className="col-span-3 h-10 text-sm font-semibold"
-        >
-          {submitting ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Long'}
+        <Button variant="long" data-action="long" onClick={() => handlePlaceOrder('long')} disabled={isDisabled}
+          className="h-12 flex flex-col items-center justify-center gap-0 rounded-lg">
+          {submitting ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (
+            <><span className="text-xs font-bold tracking-wide">BUY</span>
+              <span className="text-[10px] font-medium tabular-nums opacity-80">{askPrice > 0 ? askPrice.toFixed(priceDecimals) : '—'}</span></>
+          )}
         </Button>
       </div>
 
-      {/* Footer stats */}
-      <div className="flex items-center justify-between px-3 py-2 border-t border-border/50 text-[10px] text-muted-foreground">
-        <div className="flex items-center gap-1">
-          <span>MARGIN USED</span>
-          <span className="text-foreground font-medium tabular-nums">{formatCurrency(requiredMargin)}</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span>FUNDING</span>
-          <span className={cn('font-medium tabular-nums', fundingRate < 0 ? 'text-loss' : 'text-profit')}>
-            {(fundingRate * 100).toFixed(4)}%
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span>⏱ NEXT</span>
-          <span className="text-foreground font-medium tabular-nums">{nextFunding}</span>
-        </div>
+      {/* Spread */}
+      <div className="flex items-center justify-center px-3 pb-2 text-[9px] text-muted-foreground tabular-nums">
+        Spread: {(askPrice - bidPrice).toFixed(priceDecimals)}
+        {currentPrice > 0 && <span className="ml-1">({((askPrice - bidPrice) / currentPrice * 100).toFixed(3)}%)</span>}
       </div>
     </div>
   )

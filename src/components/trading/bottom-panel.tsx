@@ -2,36 +2,21 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, ChevronUp, X, Minus, Plus, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
+import {
+  ChevronDown, ChevronUp, X, Minus, Plus,
+  TrendingUp, TrendingDown, AlertTriangle,
+  Pencil, ArrowLeftRight, Share2,
+} from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { useTradingData, useClosedPositions, useOrders, useActivity, type ActivityItem } from '@/lib/hooks'
 import { useSWRConfig } from 'swr'
 import type { Position, Order } from '@/types'
 
-type BottomTab = 'positions' | 'orders' | 'history' | 'assets' | 'activity'
+type BottomTab = 'positions' | 'orders' | 'history' | 'balance' | 'activity'
 
 interface BottomPanelProps {
   accountId: string
-}
-
-// ─── Countdown ────────────────────────────────────────────────────────────────
-function useCountdown(targetMs: number) {
-  const [remaining, setRemaining] = useState('')
-  useEffect(() => {
-    const tick = () => {
-      const diff = targetMs - Date.now()
-      if (diff <= 0) { setRemaining('00:00:00'); return }
-      const h = Math.floor(diff / 3_600_000)
-      const m = Math.floor((diff % 3_600_000) / 60_000)
-      const s = Math.floor((diff % 60_000) / 1_000)
-      setRemaining(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`)
-    }
-    tick()
-    const id = setInterval(tick, 1_000)
-    return () => clearInterval(id)
-  }, [targetMs])
-  return remaining
 }
 
 // ─── P&L flash hook ───────────────────────────────────────────────────────────
@@ -55,17 +40,10 @@ function usePnlFlash(pnl: number): 'up' | 'down' | null {
 
 // ─── Partial Close Modal ──────────────────────────────────────────────────────
 function PartialCloseModal({
-  pos,
-  markPrice,
-  onClose,
-  onConfirm,
-  loading,
+  pos, markPrice, onClose, onConfirm, loading,
 }: {
-  pos: Position
-  markPrice: number
-  onClose: () => void
-  onConfirm: (qty: number) => void
-  loading: boolean
+  pos: Position; markPrice: number; onClose: () => void
+  onConfirm: (qty: number) => void; loading: boolean
 }) {
   const [pct, setPct] = useState(50)
   const maxQty  = pos.quantity
@@ -79,7 +57,6 @@ function PartialCloseModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="bg-card border border-border rounded-xl shadow-2xl w-[340px] p-5 flex flex-col gap-4">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-semibold text-foreground">Partial Close</h3>
@@ -95,30 +72,24 @@ function PartialCloseModal({
           </button>
         </div>
 
-        {/* Percentage slider */}
         <div className="space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Close</span>
             <span className="text-sm font-semibold tabular-nums text-foreground">{pct}%</span>
           </div>
-          <input
-            type="range" min={1} max={99} value={pct}
+          <input type="range" min={1} max={99} value={pct}
             onChange={e => setPct(Number(e.target.value))}
-            className="w-full h-1.5 rounded-full accent-primary cursor-pointer"
-          />
+            className="w-full h-1.5 rounded-full accent-primary cursor-pointer" />
           <div className="flex justify-between text-[9px] text-muted-foreground">
             {[25, 50, 75].map(p => (
               <button key={p} onClick={() => setPct(p)}
                 className={cn('px-2 py-0.5 rounded border transition-colors text-[10px]',
                   pct === p ? 'border-primary text-primary bg-primary/10' : 'border-border/50 hover:border-border'
-                )}>
-                {p}%
-              </button>
+                )}>{p}%</button>
             ))}
           </div>
         </div>
 
-        {/* Quantity step buttons */}
         <div className="flex items-center gap-2 bg-muted/30 rounded-lg border border-border/50 px-3 py-2">
           <button onClick={() => setPct(p => Math.max(1, p - 5))}
             className="p-1 rounded hover:bg-muted/60 text-muted-foreground">
@@ -134,7 +105,6 @@ function PartialCloseModal({
           </button>
         </div>
 
-        {/* P&L preview */}
         <div className="bg-muted/20 rounded-lg p-3 space-y-1.5 text-[11px]">
           <div className="flex justify-between">
             <span className="text-muted-foreground">Est. P&L</span>
@@ -152,25 +122,18 @@ function PartialCloseModal({
           </div>
         </div>
 
-        {/* Confirm */}
         <div className="flex gap-2">
           <button onClick={onClose}
             className="flex-1 h-9 rounded-lg border border-border/50 text-xs font-medium text-muted-foreground hover:bg-muted/40 transition-colors">
             Cancel
           </button>
-          <button
-            onClick={() => onConfirm(closeQty)}
-            disabled={loading}
+          <button onClick={() => onConfirm(closeQty)} disabled={loading}
             className={cn(
               'flex-1 h-9 rounded-lg text-xs font-semibold transition-colors',
-              pos.direction === 'long'
-                ? 'bg-profit/90 hover:bg-profit text-white'
-                : 'bg-loss/90 hover:bg-loss text-white',
+              pos.direction === 'long' ? 'bg-profit/90 hover:bg-profit text-white' : 'bg-loss/90 hover:bg-loss text-white',
               loading && 'opacity-60 pointer-events-none'
             )}>
-            {loading
-              ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin mx-auto" />
-              : `Close ${pct}%`}
+            {loading ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin mx-auto" /> : `Close ${pct}%`}
           </button>
         </div>
       </div>
@@ -178,7 +141,7 @@ function PartialCloseModal({
   )
 }
 
-// ─── Risk bar (liquidation distance) ─────────────────────────────────────────
+// ─── Risk bar ─────────────────────────────────────────────────────────────────
 function RiskBar({ pos, markPrice }: { pos: Position; markPrice: number }) {
   const liqPrice = pos.liquidation_price
   const entryPrice = pos.entry_price
@@ -200,21 +163,17 @@ function RiskBar({ pos, markPrice }: { pos: Position; markPrice: number }) {
   )
 }
 
-// ─── Live position row ────────────────────────────────────────────────────────
+// ─── Live position row (TradeLocker style) ────────────────────────────────────
 function LivePositionRow({
-  pos,
-  markPrice,
-  onClose,
-  onPartialClose,
-  closing = false,
+  pos, markPrice, onClose, onPartialClose, onReverse, closing = false,
 }: {
-  pos: Position
-  markPrice: number
+  pos: Position; markPrice: number
   onClose?: (id: string) => void
   onPartialClose?: (pos: Position) => void
+  onReverse?: (pos: Position) => void
   closing?: boolean
 }) {
-  const priceDiff      = pos.direction === 'long'
+  const priceDiff = pos.direction === 'long'
     ? markPrice - pos.entry_price
     : pos.entry_price - markPrice
 
@@ -222,76 +181,75 @@ function LivePositionRow({
   const roePct         = pos.isolated_margin > 0 ? (unrealizedPnl / pos.isolated_margin) * 100 : 0
   const flash          = usePnlFlash(unrealizedPnl)
 
-  // Liquidation distance %
+  const margin         = pos.isolated_margin
+  const exposure       = pos.quantity * markPrice
+
   const liqDist        = Math.abs(markPrice - pos.liquidation_price)
   const liqDistPct     = pos.entry_price > 0 ? (liqDist / pos.entry_price) * 100 : 0
   const nearLiq        = liqDistPct < 5
-
-  const durationMs  = Date.now() - pos.entry_timestamp
-  const durationStr = durationMs < 3_600_000
-    ? `${Math.floor(durationMs / 60_000)}m`
-    : durationMs < 86_400_000
-    ? `${Math.floor(durationMs / 3_600_000)}h`
-    : `${Math.floor(durationMs / 86_400_000)}d`
-
-  const marginUsePct = pos.isolated_margin > 0
-    ? Math.min(100, (Math.abs(unrealizedPnl) / pos.isolated_margin) * 100)
-    : 0
 
   return (
     <div className={cn(
       'group border-b border-border/20 transition-colors',
       closing ? 'opacity-50 pointer-events-none' : 'hover:bg-muted/10'
     )}>
-      {/* Main row */}
-      <div className="grid px-3 py-2 text-xs min-w-[800px]"
-        style={{ gridTemplateColumns: '100px 60px 90px 90px 90px 90px 120px 70px 90px' }}>
+      <div className="grid px-3 py-2 text-xs min-w-[900px]"
+        style={{ gridTemplateColumns: '90px 50px 80px 90px 90px 80px 80px 70px 80px 120px 70px' }}>
+        {/* Instrument */}
         <span className="font-semibold">{pos.symbol}</span>
+        {/* Side */}
         <Badge variant={pos.direction as 'long' | 'short'} className="text-[10px] px-1.5 py-0 h-4 w-fit">
-          {pos.direction}
+          {pos.direction === 'long' ? 'Buy' : 'Sell'}
         </Badge>
-        <span className="tabular-nums text-muted-foreground">{pos.quantity} <span className="opacity-60">lots</span> · {pos.leverage}x</span>
-        <span className="tabular-nums">${pos.entry_price.toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>
-        <span className="tabular-nums text-foreground">${markPrice.toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>
-        {/* Liquidation with risk indicator */}
+        {/* Size */}
+        <span className="tabular-nums text-muted-foreground">{pos.quantity} <span className="opacity-60">×</span> {pos.leverage}x</span>
+        {/* Entry / Market */}
+        <span className="tabular-nums">{pos.entry_price.toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>
+        <span className="tabular-nums text-foreground">{markPrice.toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>
+        {/* Margin */}
+        <span className="tabular-nums text-muted-foreground">{formatCurrency(margin)}</span>
+        {/* Exposure */}
+        <span className="tabular-nums text-muted-foreground">{formatCurrency(exposure)}</span>
+        {/* Liq */}
         <span className={cn('tabular-nums flex items-center gap-1', nearLiq && 'text-loss font-semibold')}>
           {nearLiq && <AlertTriangle className="size-2.5 shrink-0" />}
-          ${pos.liquidation_price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+          {pos.liquidation_price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
         </span>
-        {/* Animated P&L cell */}
+        {/* Fees (trade + overnight + funding) */}
+        <span className="tabular-nums text-muted-foreground">
+          {formatCurrency(pos.total_fees)}
+        </span>
+        {/* P&L */}
         <span className={cn(
           'tabular-nums font-semibold rounded px-0.5 transition-colors duration-100',
           unrealizedPnl >= 0 ? 'text-profit' : 'text-loss',
-          flash === 'up'   && 'bg-profit/15',
+          flash === 'up' && 'bg-profit/15',
           flash === 'down' && 'bg-loss/15',
         )}>
           {unrealizedPnl >= 0 ? '+' : ''}{formatCurrency(unrealizedPnl)}
-          <span className="text-[10px] ml-1 opacity-70">
-            ({roePct >= 0 ? '+' : ''}{roePct.toFixed(1)}%)
-          </span>
+          <span className="text-[10px] ml-0.5 opacity-70">({roePct >= 0 ? '+' : ''}{roePct.toFixed(1)}%)</span>
         </span>
-        <span className="text-muted-foreground/60 tabular-nums">{durationStr}</span>
-        {/* Action buttons */}
-        <div className="flex items-center gap-1 justify-end">
+        {/* Actions */}
+        <div className="flex items-center gap-0.5 justify-end">
           {closing ? (
             <div className="size-3 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
           ) : (
             <>
+              {onReverse && (
+                <button onClick={() => onReverse(pos)} title="Reverse position"
+                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
+                  <ArrowLeftRight className="size-3" />
+                </button>
+              )}
               {onPartialClose && (
-                <button
-                  onClick={() => onPartialClose(pos)}
-                  title="Partial close"
-                  className="px-1.5 py-0.5 rounded text-[9px] font-medium border border-border/50 text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all"
-                >
-                  Partial
+                <button onClick={() => onPartialClose(pos)} title="Partial close"
+                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
+                  <Pencil className="size-3" />
                 </button>
               )}
               {onClose && (
-                <button
-                  onClick={() => onClose(pos.id)}
-                  title="Close position at market"
-                  className="p-0.5 rounded hover:bg-loss/20 hover:text-loss text-muted-foreground transition-all"
-                >
+                <button onClick={() => onClose(pos.id)} title="Close position"
+                  className="p-1 rounded text-muted-foreground hover:text-loss hover:bg-loss/10 transition-all">
                   <X className="size-3" />
                 </button>
               )}
@@ -300,11 +258,11 @@ function LivePositionRow({
         </div>
       </div>
       {/* Risk bar */}
-      <div className="px-3 pb-1.5 min-w-[800px]">
+      <div className="px-3 pb-1.5 min-w-[900px]">
         <div className="flex items-center gap-2">
           <RiskBar pos={pos} markPrice={markPrice} />
           <span className="text-[9px] text-muted-foreground/60 whitespace-nowrap shrink-0">
-            Liq. {liqDistPct.toFixed(1)}% away · Margin {marginUsePct.toFixed(0)}% used
+            Liq. {liqDistPct.toFixed(1)}% away
           </span>
         </div>
       </div>
@@ -318,12 +276,16 @@ function ClosedPositionRow({ pos }: { pos: Position }) {
   const pnlPct = pos.isolated_margin > 0 ? (pnl / pos.isolated_margin) * 100 : 0
 
   return (
-    <div className="grid grid-cols-7 px-3 py-2 text-xs border-b border-border/20 hover:bg-muted/20 min-w-[640px]">
+    <div className="grid px-3 py-2 text-xs border-b border-border/20 hover:bg-muted/20 min-w-[700px]"
+      style={{ gridTemplateColumns: '90px 50px 70px 90px 90px 80px 120px 80px' }}>
       <span className="font-medium">{pos.symbol}</span>
-      <Badge variant={pos.direction as 'long' | 'short'} className="text-[10px] px-1 py-0 w-fit">{pos.direction}</Badge>
-      <span className="tabular-nums text-muted-foreground">{pos.quantity.toLocaleString()}</span>
-      <span className="tabular-nums">${pos.entry_price.toFixed(5)}</span>
-      <span className="tabular-nums">${(pos.exit_price ?? 0).toFixed(5)}</span>
+      <Badge variant={pos.direction as 'long' | 'short'} className="text-[10px] px-1 py-0 w-fit">
+        {pos.direction === 'long' ? 'Buy' : 'Sell'}
+      </Badge>
+      <span className="tabular-nums text-muted-foreground">{pos.quantity}</span>
+      <span className="tabular-nums">{pos.entry_price.toFixed(5)}</span>
+      <span className="tabular-nums">{(pos.exit_price ?? 0).toFixed(5)}</span>
+      <span className="tabular-nums text-muted-foreground">{formatCurrency(pos.total_fees)}</span>
       <span className={cn('tabular-nums font-medium', pnl >= 0 ? 'text-profit' : 'text-loss')}>
         {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
         <span className="text-[10px] ml-1 opacity-60">({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)</span>
@@ -337,13 +299,9 @@ function ClosedPositionRow({ pos }: { pos: Position }) {
 
 // ─── Order row ────────────────────────────────────────────────────────────────
 function OrderRow({
-  order,
-  onCancel,
-  cancelling,
+  order, onCancel, cancelling,
 }: {
-  order: Order
-  onCancel: (id: string) => void
-  cancelling: boolean
+  order: Order; onCancel: (id: string) => void; cancelling: boolean
 }) {
   const typeLabel = order.order_type === 'stop' ? 'Stop' : order.order_type === 'limit' ? 'Limit' : order.order_type
   const price     = order.price ?? order.stop_price
@@ -352,11 +310,10 @@ function OrderRow({
     <div className={cn(
       'group grid px-3 py-2 text-xs border-b border-border/20 hover:bg-muted/10 transition-colors min-w-[640px]',
       cancelling && 'opacity-40 pointer-events-none'
-    )}
-      style={{ gridTemplateColumns: '90px 60px 70px 80px 80px 80px 60px 60px' }}>
+    )} style={{ gridTemplateColumns: '90px 60px 70px 80px 80px 80px 60px 60px' }}>
       <span className="font-semibold">{order.symbol}</span>
       <Badge variant={order.direction as 'long' | 'short'} className="text-[10px] px-1.5 py-0 h-4 w-fit">
-        {order.direction}
+        {order.direction === 'long' ? 'Buy' : 'Sell'}
       </Badge>
       <span className="text-muted-foreground capitalize">{typeLabel}</span>
       <span className="tabular-nums">{price ? `$${price.toLocaleString(undefined, { maximumFractionDigits: 5 })}` : '—'}</span>
@@ -365,17 +322,12 @@ function OrderRow({
       <span className={cn(
         'text-[10px] font-medium px-1.5 rounded-full h-4 flex items-center w-fit',
         order.status === 'pending' ? 'bg-amber-400/15 text-amber-400' : 'bg-primary/10 text-primary'
-      )}>
-        {order.status}
-      </span>
+      )}>{order.status}</span>
       {cancelling ? (
         <div className="size-3 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
       ) : (
-        <button
-          onClick={() => onCancel(order.id)}
-          className="flex items-center justify-end text-muted-foreground hover:text-loss transition-all"
-          title="Cancel order"
-        >
+        <button onClick={() => onCancel(order.id)}
+          className="flex items-center justify-end text-muted-foreground hover:text-loss transition-all" title="Cancel order">
           <X className="size-3" />
         </button>
       )}
@@ -392,15 +344,15 @@ function ActivityRow({ item }: { item: ActivityItem }) {
     <div className="flex items-start gap-3 px-3 py-2.5 border-b border-border/20 hover:bg-muted/10 transition-colors">
       <div className={cn(
         'mt-0.5 flex items-center justify-center size-5 rounded-full shrink-0 text-[9px]',
-        isPos    && 'bg-profit/15',
+        isPos && 'bg-profit/15',
         isClosed && (item.pnl !== null && item.pnl >= 0 ? 'bg-profit/15' : 'bg-loss/15'),
         !isPos && !isClosed && 'bg-muted/40',
       )}>
-        {isPos  ? <TrendingUp className="size-2.5 text-profit" />
+        {isPos ? <TrendingUp className="size-2.5 text-profit" />
          : isClosed ? (item.pnl !== null && item.pnl >= 0
             ? <TrendingUp className="size-2.5 text-profit" />
             : <TrendingDown className="size-2.5 text-loss" />)
-         : <span className="text-muted-foreground">•</span>}
+         : <span className="text-muted-foreground">·</span>}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium text-foreground truncate">{item.title}</p>
@@ -408,8 +360,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
       </div>
       <div className="text-right shrink-0">
         {item.pnl !== null && (
-          <p className={cn('text-xs font-semibold tabular-nums',
-            item.pnl >= 0 ? 'text-profit' : 'text-loss')}>
+          <p className={cn('text-xs font-semibold tabular-nums', item.pnl >= 0 ? 'text-profit' : 'text-loss')}>
             {item.pnl >= 0 ? '+' : ''}{formatCurrency(item.pnl)}
           </p>
         )}
@@ -431,23 +382,51 @@ function EmptyState({ message, sub }: { message: string; sub: string }) {
   )
 }
 
+// ─── Account Stats Bar (TradeLocker style) ────────────────────────────────────
+function AccountStatsBar({
+  balance, pnl, equity, marginUsed, marginAvailable, marginLevel,
+}: {
+  balance: number; pnl: number; equity: number
+  marginUsed: number; marginAvailable: number; marginLevel: number
+}) {
+  return (
+    <div className="flex items-center gap-4 px-3 py-1.5 border-b border-border/50 bg-muted/10 shrink-0 overflow-x-auto no-scrollbar">
+      {[
+        { label: 'Balance', value: formatCurrency(balance), color: '' },
+        { label: 'P&L', value: `${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}`, color: pnl >= 0 ? 'text-profit' : 'text-loss' },
+        { label: 'Equity', value: formatCurrency(equity), color: '' },
+        { label: 'Margin Used', value: formatCurrency(marginUsed), color: '' },
+        { label: 'Margin Available', value: formatCurrency(marginAvailable), color: marginAvailable < 100 ? 'text-loss' : '' },
+        { label: 'Margin Level', value: marginLevel === Infinity || marginUsed === 0 ? '—' : `${marginLevel.toFixed(0)}%`, color: marginLevel < 150 && marginUsed > 0 ? 'text-loss' : '' },
+      ].map(stat => (
+        <div key={stat.label} className="flex items-center gap-1.5 shrink-0 text-[10px]">
+          <span className="text-muted-foreground uppercase tracking-wider whitespace-nowrap">{stat.label}</span>
+          <span className={cn('font-semibold tabular-nums text-foreground whitespace-nowrap', stat.color)}>
+            {stat.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ─── Main panel ───────────────────────────────────────────────────────────────
 export function BottomPanel({ accountId }: BottomPanelProps) {
-  const [activeTab, setActiveTab]     = useState<BottomTab>('positions')
-  const [collapsed, setCollapsed]     = useState(false)
-  const [closingId, setClosingId]     = useState<string | null>(null)
+  const [activeTab, setActiveTab]       = useState<BottomTab>('positions')
+  const [collapsed, setCollapsed]       = useState(false)
+  const [closingId, setClosingId]       = useState<string | null>(null)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
-  const [closeError, setCloseError]   = useState<string | null>(null)
-  const [partialPos, setPartialPos]   = useState<Position | null>(null)
+  const [closeError, setCloseError]     = useState<string | null>(null)
+  const [partialPos, setPartialPos]     = useState<Position | null>(null)
   const [partialLoading, setPartialLoading] = useState(false)
 
-  const { mutate }                      = useSWRConfig()
-  const { data: tradingData }           = useTradingData(accountId)
-  const { data: closedRaw }             = useClosedPositions(accountId)
-  const { data: pendingOrders }         = useOrders(accountId)
-  const { data: activityFeed }          = useActivity(accountId)
+  const { mutate }            = useSWRConfig()
+  const { data: tradingData } = useTradingData(accountId)
+  const { data: closedRaw }   = useClosedPositions(accountId)
+  const { data: pendingOrders } = useOrders(accountId)
+  const { data: activityFeed } = useActivity(accountId)
 
-  // ── Full close ────────────────────────────────────────────────────────────
+  // ── Close position ──
   const handleClose = useCallback(async (positionId: string) => {
     if (closingId) return
     setClosingId(positionId)
@@ -455,17 +434,14 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
     let success = false
     try {
       const res = await fetch('/api/proxy/engine/close-position', {
-        method: 'POST',
-        credentials: 'include',
+        method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position_id: positionId }),
       })
       if (!res.ok) {
         const errJson = await res.json().catch(() => null)
         setCloseError(errJson?.error ?? `Close failed (${res.status})`)
-      } else {
-        success = true
-      }
+      } else { success = true }
     } catch (e) {
       setCloseError(e instanceof Error ? e.message : 'Network error')
     } finally {
@@ -481,25 +457,21 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
     }
   }, [accountId, closingId, mutate])
 
-  // ── Partial close ─────────────────────────────────────────────────────────
+  // ── Partial close ──
   const handlePartialClose = useCallback(async (pos: Position, qty: number) => {
     setPartialLoading(true)
     setCloseError(null)
     let success = false
     try {
       const res = await fetch('/api/proxy/engine/partial-close', {
-        method: 'POST',
-        credentials: 'include',
+        method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ position_id: pos.id, quantity: qty }),
       })
       if (!res.ok) {
         const errJson = await res.json().catch(() => null)
         setCloseError(errJson?.error ?? `Partial close failed (${res.status})`)
-      } else {
-        success = true
-        setPartialPos(null)
-      }
+      } else { success = true; setPartialPos(null) }
     } catch (e) {
       setCloseError(e instanceof Error ? e.message : 'Network error')
     } finally {
@@ -515,15 +487,64 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
     }
   }, [accountId, mutate])
 
-  // ── Cancel order ──────────────────────────────────────────────────────────
+  // ── Reverse position (close + open opposite) ──
+  const handleReverse = useCallback(async (pos: Position) => {
+    if (closingId) return
+    setClosingId(pos.id)
+    setCloseError(null)
+    try {
+      // 1. Close current position
+      const closeRes = await fetch('/api/proxy/engine/close-position', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position_id: pos.id }),
+      })
+      if (!closeRes.ok) {
+        const errJson = await closeRes.json().catch(() => null)
+        setCloseError(errJson?.error ?? 'Reverse failed: could not close position')
+        return
+      }
+
+      // 2. Open opposite direction
+      const newDirection = pos.direction === 'long' ? 'short' : 'long'
+      const openRes = await fetch('/api/proxy/engine/orders', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: accountId,
+          symbol: pos.symbol,
+          direction: newDirection,
+          order_type: 'market',
+          quantity: pos.quantity,
+          leverage: pos.leverage,
+          margin_mode: pos.margin_mode,
+        }),
+      })
+      if (!openRes.ok) {
+        const errJson = await openRes.json().catch(() => null)
+        setCloseError(errJson?.message ?? 'Reverse failed: could not open opposite position')
+      }
+    } catch (e) {
+      setCloseError(e instanceof Error ? e.message : 'Network error')
+    } finally {
+      setClosingId(null)
+      mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
+      mutate('/api/proxy/actions/accounts')
+    }
+  }, [accountId, closingId, mutate])
+
+  // ── Cancel order ──
   const handleCancelOrder = useCallback(async (orderId: string) => {
     if (cancellingId) return
     setCancellingId(orderId)
     setCloseError(null)
     try {
       const res = await fetch('/api/proxy/engine/cancel-order', {
-        method: 'POST',
-        credentials: 'include',
+        method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ order_id: orderId }),
       })
@@ -548,30 +569,30 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
   const orders           = pendingOrders ?? []
   const activity         = activityFeed ?? []
 
-  const nextFundingMs    = tradingData?.instruments?.[0]?.next_funding_time ?? (Date.now() + 4 * 60 * 60 * 1000)
-  const nextFunding      = useCountdown(nextFundingMs)
-
-  const equity           = account?.net_worth ?? 0
+  // Account stats calculations (TradeLocker style)
+  const balance          = account?.injected_funds ?? 0
+  const totalRealizedPnl = account?.total_pnl ?? 0
+  const marginUsed       = account?.total_margin_required ?? 0
   const totalUnrealizedPnl = openPositions.reduce((sum, pos) => {
     const mp   = prices[pos.symbol] ?? pos.entry_price
     const diff = pos.direction === 'long' ? mp - pos.entry_price : pos.entry_price - mp
     return sum + diff * pos.quantity * pos.leverage
   }, 0)
-
-  const marginUsed       = account?.total_margin_required ?? 0
-  const fundingRate      = tradingData?.instruments?.[0]?.funding_rate ?? -0.000175
+  const equity           = (account?.net_worth ?? 0) + totalUnrealizedPnl
+  const marginAvailable  = account?.available_margin ?? 0
+  const marginLevel      = marginUsed > 0 ? (equity / marginUsed) * 100 : Infinity
 
   const tabs: { id: BottomTab; label: string; count?: number }[] = [
-    { id: 'positions', label: 'Positions',  count: openPositions.length },
-    { id: 'orders',    label: 'Orders',     count: orders.length },
-    { id: 'history',   label: 'History',    count: closedPositions.length },
-    { id: 'activity',  label: 'Activity',   count: activity.length > 0 ? undefined : 0 },
-    { id: 'assets',    label: 'Assets' },
+    { id: 'positions', label: 'Positions',        count: openPositions.length },
+    { id: 'orders',    label: 'Pending',          count: orders.length },
+    { id: 'history',   label: 'Closed Positions', count: closedPositions.length },
+    { id: 'balance',   label: 'Balance' },
+    { id: 'activity',  label: 'Activity' },
   ]
 
   return (
     <>
-      {/* Partial close modal — rendered in document.body via portal to escape ResizablePanel stacking context */}
+      {/* Partial close modal (portal to body) */}
       {partialPos && typeof document !== 'undefined' && createPortal(
         <PartialCloseModal
           pos={partialPos}
@@ -584,60 +605,38 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       )}
 
       <div className="flex flex-col h-full bg-card border-t border-border/50 overflow-hidden">
-        {/* Tabs + stats bar */}
-        <div className="flex items-center justify-between px-2 border-b border-border/50 shrink-0 h-10">
+        {/* Account Stats Bar (TradeLocker style) */}
+        <AccountStatsBar
+          balance={balance + totalRealizedPnl}
+          pnl={totalUnrealizedPnl}
+          equity={equity}
+          marginUsed={marginUsed}
+          marginAvailable={marginAvailable}
+          marginLevel={marginLevel}
+        />
+
+        {/* Tabs */}
+        <div className="flex items-center justify-between px-2 border-b border-border/50 shrink-0 h-9">
           <div className="flex items-center">
             {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
                 className={cn(
-                  'flex items-center gap-1 px-3 h-10 text-xs font-medium border-b-2 transition-colors',
+                  'flex items-center gap-1 px-3 h-9 text-xs font-medium border-b-2 transition-colors',
                   activeTab === tab.id
                     ? 'border-primary text-foreground'
                     : 'border-transparent text-muted-foreground hover:text-foreground'
-                )}
-              >
+                )}>
                 {tab.label}
                 {tab.count !== undefined && tab.count > 0 && (
-                  <span className="text-[10px] px-1 rounded-full bg-primary/10 text-primary">
-                    {tab.count}
-                  </span>
+                  <span className="text-[10px] px-1 rounded-full bg-primary/10 text-primary">{tab.count}</span>
                 )}
               </button>
             ))}
           </div>
-
-          <div className="flex items-center gap-3 pr-1 shrink-0">
-            <div className="flex items-center gap-3 text-[10px]">
-              <span className="text-muted-foreground hidden xl:inline">
-                EQUITY <span className="text-foreground font-medium tabular-nums">{formatCurrency(equity)}</span>
-              </span>
-              <span className="text-muted-foreground hidden lg:inline">
-                UNREALIZED{' '}
-                <span className={cn('font-medium tabular-nums', totalUnrealizedPnl >= 0 ? 'text-profit' : 'text-loss')}>
-                  {totalUnrealizedPnl >= 0 ? '+' : ''}{formatCurrency(totalUnrealizedPnl)}
-                </span>
-              </span>
-              <span className="text-muted-foreground hidden md:inline">
-                MARGIN <span className="text-foreground font-medium tabular-nums">{formatCurrency(marginUsed)}</span>
-              </span>
-              <span className="text-muted-foreground">
-                FUNDING <span className={cn('font-medium tabular-nums', fundingRate < 0 ? 'text-loss' : 'text-profit')}>
-                  {(fundingRate * 100).toFixed(4)}%
-                </span>
-              </span>
-              <span className="text-muted-foreground">
-                ⏱ <span className="text-foreground font-medium tabular-nums">{nextFunding}</span>
-              </span>
-            </div>
-            <button
-              onClick={() => setCollapsed(v => !v)}
-              className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {collapsed ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-            </button>
-          </div>
+          <button onClick={() => setCollapsed(v => !v)}
+            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+            {collapsed ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          </button>
         </div>
 
         {/* Error banner */}
@@ -651,21 +650,18 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
         {!collapsed && (
           <div className="flex-1 overflow-y-auto custom-scrollbar">
 
-            {/* ── POSITIONS tab ── */}
+            {/* POSITIONS tab */}
             {activeTab === 'positions' && (
               openPositions.length === 0
                 ? <EmptyState message="No open positions" sub="Place a trade to see your positions here" />
                 : (
                   <div className="overflow-x-auto">
-                    <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[800px]"
-                      style={{ display: 'grid', gridTemplateColumns: '100px 60px 90px 90px 90px 90px 120px 70px 90px' }}>
-                      <span>Symbol</span><span>Side</span><span>Size</span>
-                      <span>Entry</span><span>Mark</span>
-                      <span className="flex items-center gap-1">
-                        Liq.
-                        <span className="text-[8px] text-muted-foreground/60 normal-case">(risk)</span>
-                      </span>
-                      <span>Unrealized P&L</span><span>Age</span><span></span>
+                    <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[900px]"
+                      style={{ display: 'grid', gridTemplateColumns: '90px 50px 80px 90px 90px 80px 80px 70px 80px 120px 70px' }}>
+                      <span>Instrument</span><span>Side</span><span>Size</span>
+                      <span>Entry</span><span>Market</span>
+                      <span>Margin</span><span>Exposure</span><span>Liq.</span>
+                      <span>Fees</span><span>P&L</span><span>Actions</span>
                     </div>
                     {openPositions.map(pos => (
                       <LivePositionRow
@@ -674,6 +670,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
                         markPrice={prices[pos.symbol] ?? pos.entry_price}
                         onClose={closingId === pos.id ? undefined : handleClose}
                         onPartialClose={closingId === pos.id ? undefined : setPartialPos}
+                        onReverse={closingId === pos.id ? undefined : handleReverse}
                         closing={closingId === pos.id}
                       />
                     ))}
@@ -681,7 +678,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
                 )
             )}
 
-            {/* ── ORDERS tab ── */}
+            {/* ORDERS (Pending) tab */}
             {activeTab === 'orders' && (
               orders.length === 0
                 ? <EmptyState message="No pending orders" sub="Limit and stop orders will appear here" />
@@ -694,56 +691,45 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
                       <span>Status</span><span></span>
                     </div>
                     {orders.map(order => (
-                      <OrderRow
-                        key={order.id}
-                        order={order}
-                        onCancel={handleCancelOrder}
-                        cancelling={cancellingId === order.id}
-                      />
+                      <OrderRow key={order.id} order={order} onCancel={handleCancelOrder} cancelling={cancellingId === order.id} />
                     ))}
                   </div>
                 )
             )}
 
-            {/* ── HISTORY tab ── */}
+            {/* CLOSED POSITIONS tab */}
             {activeTab === 'history' && (
               closedPositions.length === 0
-                ? <EmptyState message="No history" sub="Closed trades will appear here" />
+                ? <EmptyState message="No closed positions" sub="Closed trades will appear here" />
                 : (
                   <div className="overflow-x-auto">
-                    <div className="grid grid-cols-7 px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[640px]">
+                    <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[700px]"
+                      style={{ display: 'grid', gridTemplateColumns: '90px 50px 70px 90px 90px 80px 120px 80px' }}>
                       <span>Symbol</span><span>Side</span><span>Size</span>
-                      <span>Entry</span><span>Exit</span><span>Realized P&L</span><span>Closed At</span>
+                      <span>Entry</span><span>Exit</span><span>Fees</span>
+                      <span>P&L</span><span>Closed At</span>
                     </div>
                     {closedPositions.map(pos => <ClosedPositionRow key={pos.id} pos={pos} />)}
                   </div>
                 )
             )}
 
-            {/* ── ACTIVITY tab ── */}
-            {activeTab === 'activity' && (
-              activity.length === 0
-                ? <EmptyState message="No activity yet" sub="Trade events will appear here in real time" />
-                : (
-                  <div>
-                    {activity.map(item => <ActivityRow key={item.id} item={item} />)}
-                  </div>
-                )
-            )}
-
-            {/* ── ASSETS tab ── */}
-            {activeTab === 'assets' && account && (
+            {/* BALANCE tab */}
+            {activeTab === 'balance' && account && (
               <div className="p-4 grid grid-cols-2 sm:grid-cols-3 gap-4">
                 {[
                   { label: 'Account Type',      value: account.account_type },
+                  { label: 'Starting Balance',   value: formatCurrency(account.injected_funds) },
                   { label: 'Net Worth',          value: formatCurrency(account.net_worth) },
                   { label: 'Available Margin',   value: formatCurrency(account.available_margin) },
-                  { label: 'Unrealized P&L',     value: formatCurrency(totalUnrealizedPnl), color: totalUnrealizedPnl >= 0 ? 'text-profit' : 'text-loss' },
-                  { label: 'Realized P&L',       value: formatCurrency(account.total_pnl), color: account.total_pnl >= 0 ? 'text-profit' : 'text-loss' },
+                  { label: 'Unrealized P&L',     value: `${totalUnrealizedPnl >= 0 ? '+' : ''}${formatCurrency(totalUnrealizedPnl)}`, color: totalUnrealizedPnl >= 0 ? 'text-profit' : 'text-loss' },
+                  { label: 'Realized P&L',       value: `${account.total_pnl >= 0 ? '+' : ''}${formatCurrency(account.total_pnl)}`, color: account.total_pnl >= 0 ? 'text-profit' : 'text-loss' },
                   { label: 'Margin Required',    value: formatCurrency(account.total_margin_required) },
-                  { label: 'Margin Mode',        value: account.default_margin_mode },
+                  { label: 'Margin Level',       value: marginLevel === Infinity || marginUsed === 0 ? '∞' : `${marginLevel.toFixed(0)}%`, color: marginLevel < 150 && marginUsed > 0 ? 'text-loss' : '' },
                   { label: 'Open Positions',     value: String(openPositions.length) },
                   { label: 'Pending Orders',     value: String(orders.length) },
+                  { label: 'Margin Mode',        value: account.default_margin_mode },
+                  { label: 'Currency',           value: account.base_currency },
                 ].map(item => (
                   <div key={item.label} className="flex flex-col gap-0.5">
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{item.label}</span>
@@ -753,6 +739,12 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
               </div>
             )}
 
+            {/* ACTIVITY tab */}
+            {activeTab === 'activity' && (
+              activity.length === 0
+                ? <EmptyState message="No activity yet" sub="Trade events will appear here in real time" />
+                : <div>{activity.map(item => <ActivityRow key={item.id} item={item} />)}</div>
+            )}
           </div>
         )}
       </div>
