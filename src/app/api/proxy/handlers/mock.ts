@@ -44,21 +44,19 @@ const INSTRUMENT_DEFS: Record<string, InstrumentDef> = {
 }
 
 // ─── Price engine with random walk ──────────────────────────────────────────
-
-const priceState: Record<string, number> = Object.fromEntries(
-  Object.entries(INSTRUMENT_DEFS).map(([sym, v]) => [sym, v.price])
-)
+// priceState lives in globalThis via state.priceState (see MockState)
 
 function jitterPrice(symbol: string): number {
   const def = INSTRUMENT_DEFS[symbol]
   if (!def) return 0
   const base = def.price
   const volatility = base * 0.0003
-  priceState[symbol] = Math.max(
+  const cur = state.priceState[symbol] ?? base
+  state.priceState[symbol] = Math.max(
     base * 0.97,
-    Math.min(base * 1.03, priceState[symbol] + (Math.random() - 0.5) * 2 * volatility)
+    Math.min(base * 1.03, cur + (Math.random() - 0.5) * 2 * volatility)
   )
-  return priceState[symbol]
+  return state.priceState[symbol]
 }
 
 function getInstruments() {
@@ -81,7 +79,7 @@ function getInstruments() {
 }
 
 function getCurrentPrice(symbol: string): number {
-  return priceState[symbol] ?? INSTRUMENT_DEFS[symbol]?.price ?? 0
+  return state.priceState[symbol] ?? INSTRUMENT_DEFS[symbol]?.price ?? 0
 }
 function getBidPrice(symbol: string): number {
   const p = getCurrentPrice(symbol)
@@ -112,6 +110,7 @@ interface MockPosition {
   funding_fees: number; total_fees: number; total_funding: number
   linked_orders: null; original_quantity: number | null
   sl_price: number | null; tp_price: number | null
+  trailing_stop_distance: number | null
   created_at: number; updated_at: number
 }
 
@@ -131,31 +130,27 @@ interface MockActivity {
   ts: number; pnl: number | null
 }
 
-// Mutable state — persists as long as the Next.js dev server process runs
-const state = {
-  positions: [] as MockPosition[],
-  closedPositions: [] as MockPosition[],
-  orders: [] as MockOrder[],
-  activity: [] as MockActivity[],
-  realizedPnl: 0,
-  totalFeesPaid: 0,
-  initialized: false,
+// ── Shared state via globalThis ──────────────────────────────────────────────
+// Turbopack may create separate module instances per route bundle.
+// Using globalThis guarantees the same state object is shared across
+// /api/proxy/[...path] and /api/prices/stream routes.
+
+interface MockState {
+  positions: MockPosition[]
+  closedPositions: MockPosition[]
+  orders: MockOrder[]
+  activity: MockActivity[]
+  realizedPnl: number
+  totalFeesPaid: number
+  initialized: boolean
+  positionMap: Map<string, MockPosition>
+  orderMap: Map<string, MockOrder>
+  _accountCache: AccountSnapshot | null
+  _accountCacheVersion: number
+  _stateVersion: number
+  priceState: Record<string, number>
 }
 
-// ── O(1) lookup maps (rebuilt on mutations) ─────────────────────────────────
-const positionMap = new Map<string, MockPosition>()
-const orderMap = new Map<string, MockOrder>()
-
-function rebuildPositionMap() {
-  positionMap.clear()
-  for (const p of state.positions) positionMap.set(p.id, p)
-}
-function rebuildOrderMap() {
-  orderMap.clear()
-  for (const o of state.orders) orderMap.set(o.id, o)
-}
-
-// ── computeAccount cache (invalidated on state mutations) ───────────────────
 interface AccountSnapshot {
   id: string; user_id: string; name: string
   account_type: string; account_type_config: string; base_currency: string
@@ -167,11 +162,40 @@ interface AccountSnapshot {
   challenge_template_id: string; created_at: number; updated_at: number
 }
 
-let _accountCache: AccountSnapshot | null = null
-let _accountCacheVersion = 0
-let _stateVersion = 0
+const G = globalThis as unknown as { __mockState?: MockState }
+if (!G.__mockState) {
+  G.__mockState = {
+    positions: [],
+    closedPositions: [],
+    orders: [],
+    activity: [],
+    realizedPnl: 0,
+    totalFeesPaid: 0,
+    initialized: false,
+    positionMap: new Map(),
+    orderMap: new Map(),
+    _accountCache: null,
+    _accountCacheVersion: 0,
+    _stateVersion: 0,
+    priceState: Object.fromEntries(
+      Object.entries(INSTRUMENT_DEFS).map(([sym, v]) => [sym, v.price])
+    ),
+  }
+}
+const state = G.__mockState
+const positionMap = state.positionMap
+const orderMap = state.orderMap
 
-function invalidateAccountCache() { _stateVersion++ }
+function rebuildPositionMap() {
+  positionMap.clear()
+  for (const p of state.positions) positionMap.set(p.id, p)
+}
+function rebuildOrderMap() {
+  orderMap.clear()
+  for (const o of state.orders) orderMap.set(o.id, o)
+}
+
+function invalidateAccountCache() { state._stateVersion++ }
 
 function initState() {
   if (state.initialized) return
@@ -186,6 +210,17 @@ function initState() {
   ]
   state.realizedPnl = 0
   state.totalFeesPaid = 0
+
+  // Start the matching engine tick loop (runs independently of SSE connections).
+  // Checks SL/TP/trailing stop every 500ms. Uses a globalThis guard so only
+  // one interval runs even if multiple route bundles import this module.
+  const GT = globalThis as unknown as { __tickRunning?: boolean }
+  if (!GT.__tickRunning) {
+    GT.__tickRunning = true
+    setInterval(() => {
+      try { tickEngine() } catch { /* swallow */ }
+    }, 500)
+  }
 }
 
 // ─── Account computations ───────────────────────────────────────────────────
@@ -194,7 +229,7 @@ function computeAccount(): AccountSnapshot {
   initState()
 
   // Return cached result if state hasn't changed
-  if (_accountCache && _accountCacheVersion === _stateVersion) return _accountCache
+  if (state._accountCache && state._accountCacheVersion === state._stateVersion) return state._accountCache
 
   const totalMarginUsed = state.positions.reduce((s, p) => s + p.isolated_margin, 0)
 
@@ -227,8 +262,8 @@ function computeAccount(): AccountSnapshot {
     created_at: Date.now() - 30 * 86400_000, updated_at: Date.now(),
   }
 
-  _accountCache = result
-  _accountCacheVersion = _stateVersion
+  state._accountCache = result
+  state._accountCacheVersion = state._stateVersion
   return result
 }
 
@@ -445,6 +480,7 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
 
     const slPrice = body.sl_price ? Number(body.sl_price) : null
     const tpPrice = body.tp_price ? Number(body.tp_price) : null
+    const trailingDist = body.trailing_stop_distance ? Number(body.trailing_stop_distance) : null
 
     if (orderType === 'market') {
       // Execute immediately at bid/ask
@@ -475,6 +511,7 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
         funding_fees: 0, total_fees: fee, total_funding: 0,
         linked_orders: null, original_quantity: qty,
         sl_price: slPrice, tp_price: tpPrice,
+        trailing_stop_distance: trailingDist,
         created_at: now, updated_at: now,
       }
 
@@ -669,6 +706,124 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
 // For backwards compatibility (unused sync version)
 export function handleMockPost(_req: NextRequest, _apiPath: string): HandlerResult {
   return null
+}
+
+// ─── SSE exports: price stream + tick engine ────────────────────────────────
+
+/**
+ * Returns jittered prices for all 14 instruments.
+ * Called by the SSE /api/prices/stream endpoint every 500ms.
+ */
+export function getAllCurrentPrices(): Record<string, number> {
+  initState()
+  return Object.fromEntries(
+    Object.keys(INSTRUMENT_DEFS).map(sym => [sym, jitterPrice(sym)])
+  )
+}
+
+/**
+ * Matching engine tick — runs on every SSE price push (500ms).
+ *
+ * 1. Trailing stop adjustment: move SL in the direction of profit
+ * 2. SL/TP auto-close: if market price hits SL or TP, close the position
+ *
+ * Positions are closed in reverse order to preserve array indices.
+ */
+export function tickEngine(): void {
+  initState()
+  if (state.positions.length === 0) return
+
+  const toClose: { pos: MockPosition; idx: number; reason: string }[] = []
+
+  for (let i = state.positions.length - 1; i >= 0; i--) {
+    const pos = state.positions[i]
+    if (pos.status !== 'open') continue
+
+    const price = getCurrentPrice(pos.symbol)
+    if (!price || price <= 0) continue
+
+    // ── 1. Trailing stop update ──────────────────────────────────────────
+    if (pos.trailing_stop_distance != null && pos.trailing_stop_distance > 0) {
+      if (pos.direction === 'long') {
+        const newSl = price - pos.trailing_stop_distance
+        if (pos.sl_price == null || newSl > pos.sl_price) {
+          pos.sl_price = newSl
+          pos.updated_at = Date.now()
+        }
+      } else {
+        const newSl = price + pos.trailing_stop_distance
+        if (pos.sl_price == null || newSl < pos.sl_price) {
+          pos.sl_price = newSl
+          pos.updated_at = Date.now()
+        }
+      }
+    }
+
+    // ── 2. Check SL hit ─────────────────────────────────────────────────
+    if (pos.sl_price != null) {
+      const slHit = pos.direction === 'long'
+        ? price <= pos.sl_price
+        : price >= pos.sl_price
+      if (slHit) {
+        toClose.push({ pos, idx: i, reason: 'sl' })
+        continue
+      }
+    }
+
+    // ── 3. Check TP hit ─────────────────────────────────────────────────
+    if (pos.tp_price != null) {
+      const tpHit = pos.direction === 'long'
+        ? price >= pos.tp_price
+        : price <= pos.tp_price
+      if (tpHit) {
+        toClose.push({ pos, idx: i, reason: 'tp' })
+        continue
+      }
+    }
+  }
+
+  // ── Close positions (already in reverse index order) ───────────────────
+  for (const { pos, idx, reason } of toClose) {
+    const exitPrice = pos.direction === 'long'
+      ? getBidPrice(pos.symbol)
+      : getAskPrice(pos.symbol)
+
+    const priceDiff = pos.direction === 'long'
+      ? exitPrice - pos.entry_price
+      : pos.entry_price - exitPrice
+    const realizedPnl = priceDiff * pos.quantity * pos.leverage
+    const closeFee = exitPrice * pos.quantity * FEE_RATE
+
+    pos.status = 'closed'
+    pos.exit_price = exitPrice
+    pos.exit_timestamp = Date.now()
+    pos.realized_pnl = realizedPnl
+    pos.total_fees += closeFee
+    pos.close_reason = reason
+    pos.updated_at = Date.now()
+
+    state.positions.splice(idx, 1)
+    positionMap.delete(pos.id)
+    state.closedPositions.push({ ...pos })
+
+    state.realizedPnl += realizedPnl
+    state.totalFeesPaid += closeFee
+    invalidateAccountCache()
+
+    const def = INSTRUMENT_DEFS[pos.symbol]
+    const pDec = def?.priceDec ?? 2
+    const pnlStr = realizedPnl >= 0
+      ? `+$${realizedPnl.toFixed(2)}`
+      : `-$${Math.abs(realizedPnl).toFixed(2)}`
+    const label = reason === 'sl' ? 'stopped out' : 'take profit hit'
+
+    state.activity.push({
+      id: uid('act'), type: 'closed',
+      title: `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} ${label}`,
+      sub: `${pos.quantity} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
+      ts: Date.now(), pnl: realizedPnl,
+    })
+  }
 }
 
 // ─── Mock GET handler ───────────────────────────────────────────────────────

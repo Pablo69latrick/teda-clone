@@ -213,6 +213,7 @@ export interface PlaceOrderRequest {
   margin_mode: MarginMode
   sl_price?: number
   tp_price?: number
+  trailing_stop_distance?: number
 }
 
 // ─────────────────────────────────────────────

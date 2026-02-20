@@ -75,8 +75,8 @@ export function useTradingData(accountId: string | undefined) {
     fetcher,
     {
       ...LIVE_OPTS,
-      refreshInterval: 3_000,         // 3s — balanced between freshness and load
-      dedupingInterval: 2_000,        // dedup within 2s window
+      refreshInterval: 30_000,        // 30s — SSE handles price updates, this is for positions/orders sync
+      dedupingInterval: 5_000,        // dedup within 5s window
     }
   )
 }
@@ -98,8 +98,8 @@ export function usePositions(accountId: string | undefined) {
     fetcher,
     {
       ...LIVE_OPTS,
-      refreshInterval: 3_000,
-      dedupingInterval: 2_000,
+      refreshInterval: 15_000,        // 15s — SSE tick engine handles SL/TP closes
+      dedupingInterval: 5_000,
     }
   )
 }

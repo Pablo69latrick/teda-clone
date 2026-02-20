@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import {
   ChevronDown, ChevronUp, X, Minus, Plus,
@@ -185,7 +185,7 @@ function RiskBar({ pos, markPrice }: { pos: Position; markPrice: number }) {
 }
 
 // ─── Live position row (TradeLocker style) ────────────────────────────────────
-function LivePositionRow({
+const LivePositionRow = memo(function LivePositionRow({
   pos, markPrice, onClose, onPartialClose, onReverse, closing = false,
 }: {
   pos: Position; markPrice: number
@@ -289,10 +289,10 @@ function LivePositionRow({
       </div>
     </div>
   )
-}
+})
 
 // ─── Closed position row ──────────────────────────────────────────────────────
-function ClosedPositionRow({ pos }: { pos: Position }) {
+const ClosedPositionRow = memo(function ClosedPositionRow({ pos }: { pos: Position }) {
   const pnl    = pos.realized_pnl
   const pnlPct = pos.isolated_margin > 0 ? (pnl / pos.isolated_margin) * 100 : 0
 
@@ -316,10 +316,10 @@ function ClosedPositionRow({ pos }: { pos: Position }) {
       </span>
     </div>
   )
-}
+})
 
 // ─── Order row ────────────────────────────────────────────────────────────────
-function OrderRow({
+const OrderRow = memo(function OrderRow({
   order, onCancel, cancelling,
 }: {
   order: Order; onCancel: (id: string) => void; cancelling: boolean
@@ -354,10 +354,10 @@ function OrderRow({
       )}
     </div>
   )
-}
+})
 
 // ─── Activity item row ────────────────────────────────────────────────────────
-function ActivityRow({ item }: { item: ActivityItem }) {
+const ActivityRow = memo(function ActivityRow({ item }: { item: ActivityItem }) {
   const isPos    = item.type === 'position'
   const isClosed = item.type === 'closed'
 
@@ -391,7 +391,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
       </div>
     </div>
   )
-}
+})
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 function EmptyState({ message, sub }: { message: string; sub: string }) {
@@ -404,7 +404,7 @@ function EmptyState({ message, sub }: { message: string; sub: string }) {
 }
 
 // ─── Account Stats Bar (TradeLocker style) ────────────────────────────────────
-function AccountStatsBar({
+const AccountStatsBar = memo(function AccountStatsBar({
   balance, pnl, equity, marginUsed, marginAvailable, marginLevel,
 }: {
   balance: number; pnl: number; equity: number
@@ -429,7 +429,7 @@ function AccountStatsBar({
       ))}
     </div>
   )
-}
+})
 
 // ─── Revalidate all trading caches ────────────────────────────────────────────
 function revalidateAll(mutate: ReturnType<typeof useSWRConfig>['mutate'], accountId: string) {
@@ -658,31 +658,34 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
 
   const account          = tradingData?.account
   const prices           = tradingData?.prices ?? {}
-  const openPositions    = tradingData?.positions?.filter(p => p.status === 'open') ?? []
+  const openPositions    = useMemo(() => tradingData?.positions?.filter(p => p.status === 'open') ?? [], [tradingData?.positions])
   const closedPositions  = closedRaw ?? []
   const orders           = pendingOrders ?? []
   const activity         = activityFeed ?? []
 
-  // Account stats calculations (TradeLocker style)
-  const balance          = account?.injected_funds ?? 0
-  const totalRealizedPnl = account?.total_pnl ?? 0
-  const marginUsed       = account?.total_margin_required ?? 0
-  const totalUnrealizedPnl = openPositions.reduce((sum, pos) => {
-    const mp   = prices[pos.symbol] ?? pos.entry_price
-    const diff = pos.direction === 'long' ? mp - pos.entry_price : pos.entry_price - mp
-    return sum + diff * pos.quantity * pos.leverage
-  }, 0)
-  const equity           = (account?.net_worth ?? 0) + totalUnrealizedPnl
-  const marginAvailable  = account?.available_margin ?? 0
-  const marginLevel      = marginUsed > 0 ? (equity / marginUsed) * 100 : Infinity
+  // Account stats calculations (memoised — only recomputes when inputs change)
+  const { balance, totalUnrealizedPnl, equity, marginUsed, marginAvailable, marginLevel, totalRealizedPnl } = useMemo(() => {
+    const bal          = account?.injected_funds ?? 0
+    const realized     = account?.total_pnl ?? 0
+    const mUsed        = account?.total_margin_required ?? 0
+    const unrealized   = openPositions.reduce((sum, pos) => {
+      const mp   = prices[pos.symbol] ?? pos.entry_price
+      const diff = pos.direction === 'long' ? mp - pos.entry_price : pos.entry_price - mp
+      return sum + diff * pos.quantity * pos.leverage
+    }, 0)
+    const eq           = (account?.net_worth ?? 0) + unrealized
+    const mAvailable   = account?.available_margin ?? 0
+    const mLevel       = mUsed > 0 ? (eq / mUsed) * 100 : Infinity
+    return { balance: bal, totalUnrealizedPnl: unrealized, equity: eq, marginUsed: mUsed, marginAvailable: mAvailable, marginLevel: mLevel, totalRealizedPnl: realized }
+  }, [account, openPositions, prices])
 
-  const tabs: { id: BottomTab; label: string; count?: number }[] = [
-    { id: 'positions', label: 'Positions',        count: openPositions.length },
-    { id: 'orders',    label: 'Pending',          count: orders.length },
-    { id: 'history',   label: 'Closed Positions', count: closedPositions.length },
-    { id: 'balance',   label: 'Balance' },
-    { id: 'activity',  label: 'Activity' },
-  ]
+  const tabs: { id: BottomTab; label: string; count?: number }[] = useMemo(() => [
+    { id: 'positions' as BottomTab, label: 'Positions',        count: openPositions.length },
+    { id: 'orders' as BottomTab,    label: 'Pending',          count: orders.length },
+    { id: 'history' as BottomTab,   label: 'Closed Positions', count: closedPositions.length },
+    { id: 'balance' as BottomTab,   label: 'Balance' },
+    { id: 'activity' as BottomTab,  label: 'Activity' },
+  ], [openPositions.length, orders.length, closedPositions.length])
 
   return (
     <>

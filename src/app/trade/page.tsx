@@ -10,6 +10,7 @@ import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
 import { EquityCurvePanel } from '@/components/trading/equity-curve-panel'
 import { useAccounts } from '@/lib/hooks'
+import { usePriceStream } from '@/lib/use-price-stream'
 
 // Fallback used only in mock / dev mode (no Supabase configured)
 const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
@@ -25,6 +26,9 @@ export default function TradePage() {
   const account     = accounts?.[0]
   const accountId   = account?.id ?? MOCK_ACCOUNT_ID
   const startingBal = account?.injected_funds ?? undefined
+
+  // Connect SSE price stream — pushes live prices into SWR cache every 500ms
+  usePriceStream(accountId)
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
