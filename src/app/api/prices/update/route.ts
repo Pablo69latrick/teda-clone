@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { createSupabaseAdminClient } from '@/lib/supabase/server'
+import { getBinancePrices, BINANCE_SYMBOLS } from '@/lib/binance-prices'
 
 // ─── Instrument maps ──────────────────────────────────────────────────────────
 
@@ -56,40 +57,60 @@ export async function GET(req: NextRequest) {
   const rows: PriceRow[] = []
   const errors: string[] = []
 
-  // ── 1. Crypto via CoinGecko /simple/price (free, no key) ─────────────────
-  try {
-    const cgIds = Object.values(COINGECKO_IDS).join(',')
-    const cgRes = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${cgIds}&vs_currencies=usd&include_24hr_change=false`,
-      {
-        headers: { 'Accept': 'application/json' },
-        next: { revalidate: 0 },
-      }
-    )
+  // ── 1. Crypto — try Binance WS first, fall back to CoinGecko ────────────
+  const manager = getBinancePrices()
+  let binanceCount = 0
 
-    if (cgRes.ok) {
-      const cgData: Record<string, { usd: number }> = await cgRes.json()
-
-      for (const [vpSymbol, cgId] of Object.entries(COINGECKO_IDS)) {
-        const price = cgData[cgId]?.usd
-        if (!price || isNaN(price)) continue
-
-        const spread = price * 0.00015  // 0.015% spread
-        rows.push({
-          symbol: vpSymbol,
-          current_price: price,
-          current_bid:   +(price - spread).toFixed(8),
-          current_ask:   +(price + spread).toFixed(8),
-          mark_price:    price,
-          funding_rate:  -0.0002,
-          last_updated:  now,
-        })
-      }
-    } else {
-      errors.push(`CoinGecko HTTP ${cgRes.status}`)
+  // Use Binance real-time prices if available
+  for (const symbol of BINANCE_SYMBOLS) {
+    const entry = manager.getPrice(symbol)
+    if (entry && Date.now() - entry.last_updated < 30_000) {
+      rows.push({ symbol, ...entry })
+      binanceCount++
     }
-  } catch (e) {
-    errors.push(`CoinGecko error: ${e}`)
+  }
+
+  // Fall back to CoinGecko for any missing crypto symbols (incl. ASTER-USD)
+  const missingSymbols = Object.keys(COINGECKO_IDS).filter(
+    s => !rows.some(r => r.symbol === s)
+  )
+
+  if (missingSymbols.length > 0) {
+    try {
+      const cgIds = missingSymbols.map(s => COINGECKO_IDS[s]).filter(Boolean).join(',')
+      const cgRes = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${cgIds}&vs_currencies=usd&include_24hr_change=false`,
+        {
+          headers: { 'Accept': 'application/json' },
+          next: { revalidate: 0 },
+        }
+      )
+
+      if (cgRes.ok) {
+        const cgData: Record<string, { usd: number }> = await cgRes.json()
+
+        for (const vpSymbol of missingSymbols) {
+          const cgId = COINGECKO_IDS[vpSymbol]
+          const price = cgData[cgId]?.usd
+          if (!price || isNaN(price)) continue
+
+          const spread = price * 0.00015
+          rows.push({
+            symbol: vpSymbol,
+            current_price: price,
+            current_bid:   +(price - spread).toFixed(8),
+            current_ask:   +(price + spread).toFixed(8),
+            mark_price:    price,
+            funding_rate:  -0.0002,
+            last_updated:  now,
+          })
+        }
+      } else {
+        errors.push(`CoinGecko HTTP ${cgRes.status}`)
+      }
+    } catch (e) {
+      errors.push(`CoinGecko error: ${e}`)
+    }
   }
 
   // ── 2. Forex via Twelve Data /price (free tier: 800 req/day) ─────────────
@@ -171,6 +192,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ok: errors.length === 0,
     updated: rows.length,
+    binance_realtime: binanceCount,
+    coingecko_fallback: rows.length - binanceCount - Object.keys(TWELVE_DATA_SYMBOLS).length,
     ts: now,
     symbols: rows.map(r => r.symbol),
     errors: errors.length > 0 ? errors : undefined,

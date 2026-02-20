@@ -85,6 +85,8 @@ function RadarChart({
   const axesPts = angles.map(a => toPoint(a, 1))
   const composite = Math.round(values.reduce((a, b) => a + b, 0) / values.length)
 
+  const [copied, setCopied] = useState(false)
+
   const handleShareToX = useCallback(async () => {
     if (!cardRef.current || sharing) return
     setSharing(true)
@@ -102,27 +104,39 @@ function RadarChart({
       // Restore button
       if (shareBtn) shareBtn.style.display = ''
 
-      // Convert to blob and download
+      // Convert to blob
       const res = await fetch(dataUrl)
       const blob = await res.blob()
 
-      // Try native share (mobile) with image
+      const tweetText = `📊 My Teda Performance Score: ${composite}/100\n\n🎯 Consistency: ${scores.consistency} | R/R: ${scores.rr} | Win%: ${scores.winRate} | IQ: ${scores.iq}\n\n#Teda #PropTrading #Trading`
+
+      // Try native share (mobile) with image attached
       if (navigator.share && navigator.canShare?.({ files: [new File([blob], 'performance.png', { type: 'image/png' })] })) {
         await navigator.share({
-          text: `📊 My VerticalProp Performance Score: ${composite}/100\n\n🎯 Consistency: ${scores.consistency} | R/R: ${scores.rr} | Win%: ${scores.winRate} | IQ: ${scores.iq}\n\n#VerticalProp #PropTrading #Trading`,
+          text: tweetText,
           files: [new File([blob], 'performance.png', { type: 'image/png' })],
         })
       } else {
-        // Desktop fallback: download image + open X with pre-filled tweet
-        const link = document.createElement('a')
-        link.download = `verticalprop-performance-${composite}.png`
-        link.href = dataUrl
-        link.click()
+        // Desktop: copy image to clipboard, then open X compose
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': blob }),
+          ])
+          setCopied(true)
+          setTimeout(() => setCopied(false), 4000)
+        } catch {
+          // Clipboard API not available — fallback: download the image
+          const link = document.createElement('a')
+          link.download = `teda-performance-${composite}.png`
+          link.href = dataUrl
+          link.click()
+        }
 
-        const tweetText = encodeURIComponent(
-          `📊 My VerticalProp Performance Score: ${composite}/100\n\n🎯 Consistency: ${scores.consistency} | R/R: ${scores.rr} | Win%: ${scores.winRate} | IQ: ${scores.iq}\n\n#VerticalProp #PropTrading #Trading`
+        // Open X compose with pre-filled text
+        window.open(
+          `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`,
+          '_blank',
         )
-        window.open(`https://x.com/intent/post?text=${tweetText}`, '_blank', 'width=550,height=420')
       }
     } catch (err) {
       console.error('Share failed:', err)
@@ -143,7 +157,7 @@ function RadarChart({
           </div>
           {/* Watermark for shared image */}
           <div className="flex items-center gap-1.5 opacity-60">
-            <span className="text-blue-200 text-[10px] font-medium tracking-wider">VERTICALPROP</span>
+            <span className="text-blue-200 text-[10px] font-medium tracking-wider">TEDA</span>
           </div>
         </div>
 
@@ -226,6 +240,11 @@ function RadarChart({
             <>
               <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               Generating...
+            </>
+          ) : copied ? (
+            <>
+              <CheckCircle className="size-3.5 text-green-300" />
+              Image copied — paste in X with ⌘V
             </>
           ) : (
             <>
