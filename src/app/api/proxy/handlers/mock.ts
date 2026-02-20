@@ -396,12 +396,14 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
     const direction = String(body.direction ?? '') as 'long' | 'short'
     const orderType = String(body.order_type ?? 'market')
     const qty       = Number(body.quantity ?? 0)
-    const leverage  = Math.max(1, Number(body.leverage ?? 1))
-    const def       = INSTRUMENT_DEFS[symbol]
+    const defLookup = INSTRUMENT_DEFS[symbol]
+    const leverage  = Math.min(defLookup?.maxLev ?? 100, Math.max(1, Number(body.leverage ?? 1)))
+    const def       = defLookup
 
     if (!def) return NextResponse.json({ message: 'Unknown symbol' }, { status: 400 })
     if (!['long', 'short'].includes(direction)) return NextResponse.json({ message: 'Invalid direction' }, { status: 400 })
     if (qty <= 0) return NextResponse.json({ message: 'Invalid quantity' }, { status: 400 })
+    if (qty < def.minSize) return NextResponse.json({ message: `Minimum order size is ${def.minSize}` }, { status: 400 })
 
     const slPrice = body.sl_price ? Number(body.sl_price) : null
     const tpPrice = body.tp_price ? Number(body.tp_price) : null
@@ -433,7 +435,7 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
         isolated_margin: margin, isolated_wallet: null,
         realized_pnl: 0, trade_fees: fee, overnight_fees: 0,
         funding_fees: 0, total_fees: fee, total_funding: 0,
-        linked_orders: null, original_quantity: null,
+        linked_orders: null, original_quantity: qty,
         sl_price: slPrice, tp_price: tpPrice,
         created_at: now, updated_at: now,
       }
