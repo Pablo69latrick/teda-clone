@@ -301,6 +301,28 @@ export interface LeaderboardEntry {
 }
 
 // ─────────────────────────────────────────────
+// PAYOUTS
+// ─────────────────────────────────────────────
+export type PayoutStatus = 'pending' | 'approved' | 'rejected' | 'processing' | 'paid'
+export type PayoutMethod = 'crypto' | 'bank' | 'paypal'
+
+export interface Payout {
+  id: string
+  account_id: string
+  user_id: string
+  amount: number
+  status: PayoutStatus
+  method: PayoutMethod
+  wallet_address: string | null
+  tx_hash: string | null
+  admin_note: string | null
+  requested_at: number
+  processed_at: number | null
+  created_at: number
+  updated_at: number
+}
+
+// ─────────────────────────────────────────────
 // NOTIFICATIONS
 // ─────────────────────────────────────────────
 export type NotificationType = 'position' | 'order' | 'challenge' | 'payout' | 'system'

@@ -293,6 +293,28 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
     return NextResponse.json(data ?? [])
   }
 
+  // ── engine/payouts ───────────────────────────────────────────────────────────
+  if (apiPath === 'engine/payouts') {
+    const accountId = req.nextUrl.searchParams.get('account_id')
+    const supabase = await createSupabaseServerClient()
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+
+    const { data: payouts } = await supabase
+      .from('payouts').select('*')
+      .eq('account_id', accountId)
+      .order('requested_at', { ascending: false })
+      .limit(50)
+
+    return NextResponse.json((payouts ?? []).map(p => ({
+      ...p,
+      requested_at: toEpochMs(p.requested_at),
+      processed_at: p.processed_at ? toEpochMs(p.processed_at) : null,
+      created_at: toEpochMs(p.created_at),
+      updated_at: toEpochMs(p.updated_at),
+    })))
+  }
+
   // ── leaderboard ─────────────────────────────────────────────────────────────
   if (apiPath === 'leaderboard') {
     const supabase = await createSupabaseServerClient()

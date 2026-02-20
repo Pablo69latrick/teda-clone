@@ -15,7 +15,7 @@ import { handleAuthRead } from '../handlers/auth'
 import { handleEngineRead } from '../handlers/engine-read'
 import { handleEngineWrite } from '../handlers/engine-write'
 import { handleSettings } from '../handlers/settings'
-import { handleAdmin } from '../handlers/admin'
+import { handleAdmin, handleAdminWrite } from '../handlers/admin'
 import { handleMockPostAsync, handleMockGet } from '../handlers/mock'
 
 const isSupabaseReady = isServerSupabaseConfigured
@@ -59,7 +59,8 @@ async function handler(
       if (req.method === 'POST') {
         const result =
           (await handleEngineWrite(req, apiPath)) ??
-          (await handleSettings(req, apiPath))
+          (await handleSettings(req, apiPath)) ??
+          (await handleAdminWrite(req, apiPath))
         if (result) return result
       }
 

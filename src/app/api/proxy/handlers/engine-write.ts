@@ -510,5 +510,100 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     return NextResponse.json({ success: true, order_id: orderId })
   }
 
+  // ── engine/request-payout ───────────────────────────────────────────────────
+  if (apiPath === 'engine/request-payout') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    if (!body.account_id || typeof body.account_id !== 'string') {
+      return NextResponse.json({ error: 'Invalid account' }, { status: 400 })
+    }
+
+    const amount = Number(body.amount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
+    }
+
+    const method = body.method ?? 'crypto'
+    if (!['crypto', 'bank', 'paypal'].includes(method as string)) {
+      return NextResponse.json({ error: 'Invalid payout method' }, { status: 400 })
+    }
+
+    const walletAddress = typeof body.wallet_address === 'string' ? body.wallet_address.trim() : null
+    if (method === 'crypto' && (!walletAddress || walletAddress.length < 10)) {
+      return NextResponse.json({ error: 'Valid wallet address required for crypto payouts' }, { status: 400 })
+    }
+
+    // Verify account ownership
+    const { data: account } = await supabase
+      .from('accounts')
+      .select('id, user_id, realized_pnl, starting_balance, account_status')
+      .eq('id', body.account_id)
+      .single()
+
+    if (!account) {
+      return NextResponse.json({ error: 'Account not found' }, { status: 404 })
+    }
+    if (account.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Only funded accounts can request payouts
+    if (account.account_status !== 'funded') {
+      return NextResponse.json({ error: 'Payouts are only available for funded accounts' }, { status: 422 })
+    }
+
+    // Check available profit (80% profit split)
+    const availableProfit = Math.max(0, Number(account.realized_pnl) * 0.8)
+    if (amount > availableProfit) {
+      return NextResponse.json({ error: 'Amount exceeds available payout balance' }, { status: 422 })
+    }
+
+    const admin = createSupabaseAdminClient()
+    const now = Date.now()
+
+    const { data: payout, error: insertErr } = await admin
+      .from('payouts')
+      .insert({
+        account_id:      body.account_id,
+        user_id:         user.id,
+        amount,
+        status:          'pending',
+        method,
+        wallet_address:  walletAddress,
+        tx_hash:         null,
+        admin_note:      null,
+        requested_at:    now,
+        processed_at:    null,
+      })
+      .select()
+      .single()
+
+    if (insertErr || !payout) {
+      console.error('[request-payout] insert error:', insertErr)
+      return NextResponse.json({ error: 'Failed to submit payout request' }, { status: 500 })
+    }
+
+    // Activity record
+    await admin.from('activity').insert({
+      account_id: body.account_id,
+      type:  'payout',
+      title: 'Payout requested',
+      sub:   `$${amount.toFixed(2)} via ${method}`,
+      ts:    now,
+      pnl:   null,
+    })
+
+    return NextResponse.json({
+      ...payout,
+      requested_at: now,
+      processed_at: null,
+      created_at: toEpochMs(payout.created_at),
+      updated_at: toEpochMs(payout.updated_at),
+    }, { status: 201 })
+  }
+
   return null
 }

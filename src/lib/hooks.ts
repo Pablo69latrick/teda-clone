@@ -21,6 +21,7 @@ import type {
   AdminAccount,
   ChallengeTemplate,
   Affiliate,
+  Payout,
 } from '@/types'
 
 // ─── Base fetcher ──────────────────────────────────────────────────────────
@@ -263,4 +264,20 @@ export function useActivity(accountId: string | undefined) {
     fetcher,
     { revalidateOnFocus: false, dedupingInterval: 30_000 }
   )
+}
+
+// ─── Payouts ──────────────────────────────────────────────────────────────────
+
+export function usePayouts(accountId: string | undefined) {
+  return useSWR<Payout[]>(
+    accountId ? `/api/proxy/engine/payouts?account_id=${accountId}` : null,
+    fetcher,
+    { revalidateOnFocus: false, dedupingInterval: 30_000 }
+  )
+}
+
+export function useAdminPayouts() {
+  return useSWR<Payout[]>('/api/proxy/admin/payouts', fetcher, {
+    revalidateOnFocus: false,
+  })
 }

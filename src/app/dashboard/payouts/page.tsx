@@ -1,54 +1,81 @@
 'use client'
 
 import { useState } from 'react'
-import { DollarSign, Clock, CheckCircle, XCircle, Plus, ExternalLink } from 'lucide-react'
+import { DollarSign, Clock, CheckCircle, XCircle, Plus, ExternalLink, Loader2 } from 'lucide-react'
 import { cn, formatCurrency, timeAgo } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { useAccounts, useTradingData } from '@/lib/hooks'
+import { useAccounts, useTradingData, usePayouts } from '@/lib/hooks'
+import { mutate } from 'swr'
+import type { PayoutStatus, PayoutMethod } from '@/types'
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />
 }
 
-type PayoutStatus = 'pending' | 'approved' | 'rejected' | 'paid'
-
-interface MockPayout {
-  id: string
-  amount: number
-  status: PayoutStatus
-  requested_at: number
-  processed_at: number | null
-  wallet: string
-  tx_hash: string | null
+const STATUS_CONFIG: Record<PayoutStatus, { label: string; icon: React.ElementType; cls: string }> = {
+  pending:    { label: 'Pending',    icon: Clock,       cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' },
+  approved:   { label: 'Approved',   icon: CheckCircle, cls: 'bg-chart-2/10 text-chart-2 border-chart-2/20' },
+  processing: { label: 'Processing', icon: Loader2,     cls: 'bg-blue-500/10 text-blue-400 border-blue-500/20' },
+  rejected:   { label: 'Rejected',   icon: XCircle,     cls: 'bg-loss/10 text-loss border-loss/20' },
+  paid:       { label: 'Paid',       icon: CheckCircle, cls: 'bg-profit/10 text-profit border-profit/20' },
 }
 
-// Mock payout history — in prod this would come from /api/proxy/actions/payouts
-const MOCK_PAYOUTS: MockPayout[] = [
-  { id: 'p1', amount: 3_200, status: 'paid', requested_at: Date.now() - 14 * 86400_000, processed_at: Date.now() - 12 * 86400_000, wallet: '0xaB3c...8dF1', tx_hash: '0xabc123' },
-  { id: 'p2', amount: 1_800, status: 'approved', requested_at: Date.now() - 3 * 86400_000, processed_at: Date.now() - 1 * 86400_000, wallet: '0xaB3c...8dF1', tx_hash: null },
-  { id: 'p3', amount: 5_500, status: 'pending', requested_at: Date.now() - 1 * 86400_000, processed_at: null, wallet: '0xaB3c...8dF1', tx_hash: null },
-]
-
-const STATUS_CONFIG: Record<PayoutStatus, { label: string; icon: React.ElementType; cls: string }> = {
-  pending: { label: 'Pending', icon: Clock, cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' },
-  approved: { label: 'Approved', icon: CheckCircle, cls: 'bg-chart-2/10 text-chart-2 border-chart-2/20' },
-  rejected: { label: 'Rejected', icon: XCircle, cls: 'bg-loss/10 text-loss border-loss/20' },
-  paid: { label: 'Paid', icon: CheckCircle, cls: 'bg-profit/10 text-profit border-profit/20' },
+const METHOD_LABELS: Record<PayoutMethod, string> = {
+  crypto: 'Crypto (USDT/USDC)',
+  bank: 'Bank Transfer',
+  paypal: 'PayPal',
 }
 
 export default function PayoutsPage() {
   const [showRequest, setShowRequest] = useState(false)
   const [amount, setAmount] = useState('')
+  const [wallet, setWallet] = useState('')
+  const [method, setMethod] = useState<PayoutMethod>('crypto')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const { data: accounts, isLoading: loadingAccounts } = useAccounts()
+  const { data: accounts } = useAccounts()
   const account = accounts?.[0]
-  const { data: tradingData, isLoading } = useTradingData(account?.id)
+  const accountId = account?.id
+  const { data: tradingData, isLoading } = useTradingData(accountId)
+  const { data: payouts, isLoading: loadingPayouts } = usePayouts(accountId)
 
   const acc = tradingData?.account ?? account
   const availableForPayout = Math.max(0, (acc?.total_pnl ?? 0) * 0.8) // 80% profit split
-  const totalPaid = MOCK_PAYOUTS.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
-  const pendingAmount = MOCK_PAYOUTS.filter(p => p.status === 'pending').reduce((s, p) => s + p.amount, 0)
+  const totalPaid = (payouts ?? []).filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
+  const pendingAmount = (payouts ?? []).filter(p => p.status === 'pending' || p.status === 'approved').reduce((s, p) => s + p.amount, 0)
+  const pendingCount = (payouts ?? []).filter(p => p.status === 'pending' || p.status === 'approved').length
+
+  async function handleSubmit() {
+    if (!accountId || !amount || parseFloat(amount) <= 0) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/proxy/engine/request-payout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          account_id: accountId,
+          amount: parseFloat(amount),
+          method,
+          wallet_address: wallet || null,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to submit request')
+      }
+      mutate(`/api/proxy/engine/payouts?account_id=${accountId}`)
+      setShowRequest(false)
+      setAmount('')
+      setWallet('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -72,15 +99,15 @@ export default function PayoutsPage() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
           { label: 'Available for Payout', value: formatCurrency(availableForPayout), icon: DollarSign, accent: 'profit' as const, sub: '80% profit split' },
-          { label: 'Total Paid', value: formatCurrency(totalPaid), icon: CheckCircle, accent: null, sub: `${MOCK_PAYOUTS.filter(p => p.status === 'paid').length} payouts` },
-          { label: 'Pending', value: formatCurrency(pendingAmount), icon: Clock, accent: null, sub: `${MOCK_PAYOUTS.filter(p => p.status === 'pending').length} request(s)` },
+          { label: 'Total Paid', value: formatCurrency(totalPaid), icon: CheckCircle, accent: null, sub: `${(payouts ?? []).filter(p => p.status === 'paid').length} payouts` },
+          { label: 'Pending', value: formatCurrency(pendingAmount), icon: Clock, accent: null, sub: `${pendingCount} request(s)` },
         ].map(stat => (
           <div key={stat.label} className="flex flex-col gap-3 rounded-xl bg-card border border-border/50 p-4">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-semibold tracking-widest uppercase text-muted-foreground">{stat.label}</span>
               <stat.icon className="size-4 text-muted-foreground/50" />
             </div>
-            {isLoading ? (
+            {isLoading || loadingPayouts ? (
               <Skeleton className="h-7 w-28" />
             ) : (
               <div className={cn('text-xl font-bold tracking-tight', stat.accent === 'profit' ? 'text-profit' : '')}>
@@ -96,7 +123,14 @@ export default function PayoutsPage() {
       {showRequest && (
         <div className="rounded-xl bg-card border border-border/50 p-5">
           <h2 className="text-sm font-semibold mb-4">New Payout Request</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+          {error && (
+            <div className="mb-4 p-3 rounded-lg bg-loss/10 border border-loss/20 text-loss text-xs">
+              {error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="text-xs text-muted-foreground block mb-1.5">Amount (USD)</label>
               <div className="flex items-center gap-2 bg-muted/30 border border-border/50 rounded-lg px-3 py-2">
@@ -119,23 +153,50 @@ export default function PayoutsPage() {
                 Available: {formatCurrency(availableForPayout)}
               </p>
             </div>
+
             <div>
-              <label className="text-xs text-muted-foreground block mb-1.5">Wallet Address</label>
+              <label className="text-xs text-muted-foreground block mb-1.5">Method</label>
+              <select
+                value={method}
+                onChange={e => setMethod(e.target.value as PayoutMethod)}
+                className="w-full bg-muted/30 border border-border/50 rounded-lg px-3 py-2 text-sm focus:outline-none text-foreground"
+              >
+                {Object.entries(METHOD_LABELS).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1.5">
+                {method === 'crypto' ? 'Wallet Address' : method === 'paypal' ? 'PayPal Email' : 'Account Details'}
+              </label>
               <div className="bg-muted/30 border border-border/50 rounded-lg px-3 py-2">
                 <input
                   type="text"
-                  placeholder="0x..."
+                  value={wallet}
+                  onChange={e => setWallet(e.target.value)}
+                  placeholder={method === 'crypto' ? '0x...' : method === 'paypal' ? 'email@example.com' : 'IBAN / Account #'}
                   className="w-full bg-transparent text-sm focus:outline-none text-foreground"
                 />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1">USDT / USDC on BSC or ETH</p>
+              {method === 'crypto' && (
+                <p className="text-[10px] text-muted-foreground mt-1">USDT / USDC on BSC or ETH</p>
+              )}
             </div>
           </div>
+
           <div className="flex items-center justify-end gap-2 mt-4">
-            <Button variant="outline" size="sm" onClick={() => setShowRequest(false)} className="text-xs">
+            <Button variant="outline" size="sm" onClick={() => { setShowRequest(false); setError(null) }} className="text-xs">
               Cancel
             </Button>
-            <Button size="sm" className="text-xs" disabled={!amount || parseFloat(amount) <= 0}>
+            <Button
+              size="sm"
+              className="text-xs"
+              disabled={!amount || parseFloat(amount) <= 0 || submitting}
+              onClick={handleSubmit}
+            >
+              {submitting && <Loader2 className="size-3 mr-1.5 animate-spin" />}
               Submit Request
             </Button>
           </div>
@@ -149,53 +210,65 @@ export default function PayoutsPage() {
             <DollarSign className="size-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold">Payout History</h2>
           </div>
-          <span className="text-xs text-muted-foreground">{MOCK_PAYOUTS.length} requests</span>
+          <span className="text-xs text-muted-foreground">{(payouts ?? []).length} requests</span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/50">
-                <th className="text-left px-5 py-2">Amount</th>
-                <th className="text-left px-3 py-2">Wallet</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-right px-3 py-2">Requested</th>
-                <th className="text-right px-5 py-2">Processed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {MOCK_PAYOUTS.map(payout => {
-                const cfg = STATUS_CONFIG[payout.status]
-                const Icon = cfg.icon
-                return (
-                  <tr key={payout.id} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
-                    <td className="px-5 py-3 font-semibold tabular-nums">{formatCurrency(payout.amount)}</td>
-                    <td className="px-3 py-3 font-mono text-muted-foreground text-[10px]">{payout.wallet}</td>
-                    <td className="px-3 py-3">
-                      <div className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-medium', cfg.cls)}>
-                        <Icon className="size-2.5" />
-                        {cfg.label}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-right text-muted-foreground tabular-nums">
-                      {timeAgo(payout.requested_at)}
-                    </td>
-                    <td className="px-5 py-3 text-right text-muted-foreground tabular-nums">
-                      {payout.processed_at ? (
-                        <div className="flex items-center justify-end gap-1">
-                          <span>{timeAgo(payout.processed_at)}</span>
-                          {payout.tx_hash && (
-                            <ExternalLink className="size-3 text-muted-foreground/50" />
-                          )}
+        {loadingPayouts ? (
+          <div className="px-5 pb-5 space-y-3">
+            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+          </div>
+        ) : (payouts ?? []).length === 0 ? (
+          <div className="px-5 pb-8 text-center text-sm text-muted-foreground">
+            No payout requests yet. Once your account is funded, you can request withdrawals here.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] text-muted-foreground uppercase tracking-wider border-b border-border/50">
+                  <th className="text-left px-5 py-2">Amount</th>
+                  <th className="text-left px-3 py-2">Method</th>
+                  <th className="text-left px-3 py-2">Wallet</th>
+                  <th className="text-left px-3 py-2">Status</th>
+                  <th className="text-right px-3 py-2">Requested</th>
+                  <th className="text-right px-5 py-2">Processed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(payouts ?? []).map(payout => {
+                  const cfg = STATUS_CONFIG[payout.status] ?? STATUS_CONFIG.pending
+                  const Icon = cfg.icon
+                  return (
+                    <tr key={payout.id} className="border-b border-border/30 hover:bg-muted/20 transition-colors">
+                      <td className="px-5 py-3 font-semibold tabular-nums">{formatCurrency(payout.amount)}</td>
+                      <td className="px-3 py-3 text-muted-foreground capitalize">{payout.method}</td>
+                      <td className="px-3 py-3 font-mono text-muted-foreground text-[10px]">{payout.wallet_address ?? '—'}</td>
+                      <td className="px-3 py-3">
+                        <div className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-medium', cfg.cls)}>
+                          <Icon className="size-2.5" />
+                          {cfg.label}
                         </div>
-                      ) : '—'}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                      <td className="px-3 py-3 text-right text-muted-foreground tabular-nums">
+                        {timeAgo(payout.requested_at)}
+                      </td>
+                      <td className="px-5 py-3 text-right text-muted-foreground tabular-nums">
+                        {payout.processed_at ? (
+                          <div className="flex items-center justify-end gap-1">
+                            <span>{timeAgo(payout.processed_at)}</span>
+                            {payout.tx_hash && (
+                              <ExternalLink className="size-3 text-muted-foreground/50" />
+                            )}
+                          </div>
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )
