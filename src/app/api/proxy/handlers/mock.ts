@@ -130,6 +130,61 @@ interface MockActivity {
   ts: number; pnl: number | null
 }
 
+// ── CRM seed data interfaces ─────────────────────────────────────────────────
+
+interface SeededUser {
+  id: string; name: string; email: string; emailVerified: boolean
+  image: null; role: 'user' | 'admin'; banned: boolean
+  banReason: string | null; banExpires: null; twoFactorEnabled: boolean
+  createdAt: number; updatedAt: number; lastSeen: number
+}
+
+interface SeededAccount {
+  id: string; userId: string; userEmail: string; userName: string
+  accountType: 'prop' | 'demo'; name: string
+  availableMargin: number; reservedMargin: number; totalMarginRequired: number
+  injectedFunds: number; baseCurrency: string; defaultMarginMode: string
+  isActive: boolean; isClosed: boolean; accountStatus: string
+  challengeTemplateId: string; createdAt: number; updatedAt: number
+  startingBalance: number; netWorth: number; realizedPnl: number
+  unrealizedPnl: number; drawdownPct: number; dailyLossPct: number
+  tradingDays: number; currentPhase: number
+}
+
+interface SeededPayout {
+  id: string; account_id: string; user_id: string
+  user_name: string; user_email: string; amount: number
+  status: string; method: string; wallet_address: string | null
+  tx_hash: string | null; admin_note: string | null
+  requested_at: number; processed_at: number | null
+  created_at: number; updated_at: number
+}
+
+interface SeededAffiliate {
+  id: string; userId: string; userEmail: string; userName: string
+  programId: string; programName: string; affiliateCode: string
+  status: string; statusReason: string | null
+}
+
+interface CRMStats {
+  total_users: number; active_accounts: number; funded_accounts: number
+  breached_accounts: number; passed_accounts: number; closed_accounts: number
+  total_deposited: number; total_payouts_paid: number
+  pending_payouts: number; pending_payout_amount: number
+  revenue_today: number; revenue_month: number; revenue_all_time: number
+  new_signups_today: number; new_signups_month: number
+  churn_rate: number; avg_account_lifetime_days: number
+}
+
+interface CRMRiskMetrics {
+  total_open_exposure: number; total_open_pnl: number
+  max_single_account_exposure: number; accounts_near_breach: number
+  accounts_at_daily_limit: number; breached_today: number
+  largest_open_position: { symbol: string; notional: number; account_id: string; direction: string } | null
+  top_symbols_exposure: { symbol: string; long_notional: number; short_notional: number; net: number }[]
+  drawdown_distribution: { bucket: string; count: number }[]
+}
+
 // ── Shared state via globalThis ──────────────────────────────────────────────
 // Turbopack may create separate module instances per route bundle.
 // Using globalThis guarantees the same state object is shared across
@@ -149,6 +204,15 @@ interface MockState {
   _accountCacheVersion: number
   _stateVersion: number
   priceState: Record<string, number>
+  // CRM seed data (100k accounts)
+  crmSeeded: boolean
+  crmUsers: SeededUser[]
+  crmAccounts: SeededAccount[]
+  crmPayouts: SeededPayout[]
+  crmAffiliates: SeededAffiliate[]
+  crmStats: CRMStats | null
+  crmRiskMetrics: CRMRiskMetrics | null
+  crmTemplateAccountCounts: Record<string, number>
 }
 
 interface AccountSnapshot {
@@ -163,6 +227,10 @@ interface AccountSnapshot {
 }
 
 const G = globalThis as unknown as { __mockState?: MockState }
+// Reset if state is from a previous version (missing CRM fields)
+if (G.__mockState && !('crmSeeded' in G.__mockState)) {
+  G.__mockState = undefined
+}
 if (!G.__mockState) {
   G.__mockState = {
     positions: [],
@@ -180,6 +248,14 @@ if (!G.__mockState) {
     priceState: Object.fromEntries(
       Object.entries(INSTRUMENT_DEFS).map(([sym, v]) => [sym, v.price])
     ),
+    crmSeeded: false,
+    crmUsers: [],
+    crmAccounts: [],
+    crmPayouts: [],
+    crmAffiliates: [],
+    crmStats: null,
+    crmRiskMetrics: null,
+    crmTemplateAccountCounts: {},
   }
 }
 const state = G.__mockState
@@ -211,6 +287,9 @@ function initState() {
   state.realizedPnl = 0
   state.totalFeesPaid = 0
 
+  // Seed CRM data (100k accounts for admin panels)
+  seedCRM()
+
   // Start the matching engine tick loop (runs independently of SSE connections).
   // Checks SL/TP/trailing stop every 500ms. Uses a globalThis guard so only
   // one interval runs even if multiple route bundles import this module.
@@ -220,6 +299,254 @@ function initState() {
     setInterval(() => {
       try { tickEngine() } catch { /* swallow */ }
     }, 500)
+  }
+}
+
+// ─── CRM Seed Engine (72k users, 100k accounts) ─────────────────────────────
+// Deterministic PRNG for reproducible seed data
+
+function seededRandom(seed: number): () => number {
+  return () => {
+    seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+    return (seed >>> 0) / 0xFFFFFFFF
+  }
+}
+
+const CRM_FIRST = ['Alex','Jamie','Sam','Morgan','Taylor','Casey','Riley','Drew','Jordan','Quinn','Blake','Avery','Charlie','Dakota','Emerson','Finley','Harper','Kai','Logan','Parker','Reese','Sage','Skyler','Tatum','Devon','Ellis','Frankie','Gray','Hayden','Indigo','Jules','Kit','Lane','Marley','Noel','Oakley','Phoenix','Remy','Shiloh','Toby','Ash','Bay','Cedar','Darcy','Eden','Flynn','Glen','Hart','Ira','Jesse']
+const CRM_LAST = ['Anderson','Brown','Chen','Davis','Evans','Foster','Garcia','Harris','Ibrahim','Jones','Kim','Lee','Martinez','Nguyen','Olsen','Patel','Quinn','Rivera','Smith','Taylor','Ueda','Vance','Wang','Xavier','Yang','Zhang','Adams','Baker','Clark','Diaz','Edwards','Fisher','Green','Hall','Ito','Jackson','Kumar','Lopez','Miller','Nelson','Park','Reed','Scott','Thomas','Varma','White','Young','Zhou','Bennett','Collins']
+
+const CRM_TEMPLATES = [
+  { id: 'tmpl-1', name: '100K Instant Funding', balance: 100_000, fee: 549 },
+  { id: 'tmpl-2', name: '50K Standard 2-Step', balance: 50_000, fee: 299 },
+  { id: 'tmpl-3', name: '200K Elite', balance: 200_000, fee: 1099 },
+]
+
+function seedCRM() {
+  if (state.crmSeeded) return
+  state.crmSeeded = true
+
+  const rand = seededRandom(42)
+  const now = Date.now()
+  const DAY = 86_400_000
+  const USER_COUNT = 72_000
+  const ACCOUNT_COUNT = 100_000
+
+  // ── Generate users ──────────────────────────────────────────────────────────
+  const users: SeededUser[] = new Array(USER_COUNT)
+  for (let i = 0; i < USER_COUNT; i++) {
+    const fn = CRM_FIRST[Math.floor(rand() * CRM_FIRST.length)]
+    const ln = CRM_LAST[Math.floor(rand() * CRM_LAST.length)]
+    const daysAgo = Math.floor(rand() * 365) + 1
+    const banned = rand() < 0.02
+    users[i] = {
+      id: `user-${i}`, name: `${fn} ${ln}`,
+      email: `${fn.toLowerCase()}.${ln.toLowerCase()}${i}@example.com`,
+      emailVerified: rand() > 0.05, image: null,
+      role: i < 5 ? 'admin' : 'user',
+      banned, banReason: banned ? 'ToS violation' : null, banExpires: null,
+      twoFactorEnabled: rand() < 0.25,
+      createdAt: now - daysAgo * DAY,
+      updatedAt: now - Math.floor(rand() * 30) * DAY,
+      lastSeen: now - Math.floor(rand() * 14) * DAY,
+    }
+  }
+
+  // ── Generate accounts ───────────────────────────────────────────────────────
+  const accounts: SeededAccount[] = new Array(ACCOUNT_COUNT)
+  const tmplCounts: Record<string, number> = { 'tmpl-1': 0, 'tmpl-2': 0, 'tmpl-3': 0 }
+
+  // Aggregation accumulators
+  let totalDeposited = 0, totalPayoutsPaid = 0
+  let totalOpenExposure = 0, totalOpenPnl = 0, maxSingleExposure = 0
+  let accountsNearBreach = 0, accountsAtDailyLimit = 0, breachedToday = 0
+  let signupsToday = 0, signupsMonth = 0, totalLifetimeDays = 0, closedCount = 0
+  let statusCounts = { active: 0, funded: 0, breached: 0, passed: 0, closed: 0 }
+  const symExposure: Record<string, { long: number; short: number }> = {}
+  const drawdownDist = [0, 0, 0, 0, 0]
+  let largestPos: CRMRiskMetrics['largest_open_position'] = null
+  const symbols = Object.keys(INSTRUMENT_DEFS)
+
+  for (let i = 0; i < ACCOUNT_COUNT; i++) {
+    const userIdx = Math.floor(rand() * USER_COUNT)
+    const user = users[userIdx]
+
+    // Template (40% / 40% / 20%)
+    const tRoll = rand()
+    const tmpl = tRoll < 0.40 ? CRM_TEMPLATES[0] : tRoll < 0.80 ? CRM_TEMPLATES[1] : CRM_TEMPLATES[2]
+    tmplCounts[tmpl.id]++
+
+    // Status (55% active, 18% breached, 12% funded, 8% passed, 7% closed)
+    const sRoll = rand()
+    let status: string
+    if (sRoll < 0.55) status = 'active'
+    else if (sRoll < 0.73) status = 'breached'
+    else if (sRoll < 0.85) status = 'funded'
+    else if (sRoll < 0.93) status = 'passed'
+    else status = 'closed'
+    statusCounts[status as keyof typeof statusCounts]++
+
+    const isActive = status === 'active' || status === 'funded'
+    const isClosed = status === 'closed'
+    const daysAgo = Math.floor(rand() * 180) + 1
+    const createdAt = now - daysAgo * DAY
+
+    // Financial metrics
+    const startBal = tmpl.balance
+    let pnlPct: number
+    switch (status) {
+      case 'funded':  pnlPct = 0.05 + rand() * 0.15; break
+      case 'passed':  pnlPct = 0.08 + rand() * 0.12; break
+      case 'breached': pnlPct = -(0.08 + rand() * 0.04); break
+      case 'closed':  pnlPct = -(0.02 + rand() * 0.08); break
+      default:        pnlPct = (rand() - 0.4) * 0.08; break
+    }
+
+    const realizedPnl = startBal * pnlPct
+    const unrealizedPnl = isActive ? startBal * (rand() - 0.5) * 0.02 : 0
+    const netWorth = startBal + realizedPnl + unrealizedPnl
+    const drawdown = Math.max(0, (startBal - netWorth) / startBal)
+    const dailyLoss = isActive ? rand() * 0.03 : 0
+    const margin = isActive ? netWorth * (0.05 + rand() * 0.15) : 0
+
+    accounts[i] = {
+      id: `acc-${i}`, userId: user.id, userEmail: user.email, userName: user.name,
+      accountType: rand() < 0.05 ? 'demo' : 'prop',
+      name: `Phase ${Math.floor(rand() * 2) + 1} — ${status === 'funded' ? 'Funded' : 'Evaluation'}`,
+      availableMargin: Math.max(0, netWorth - margin), reservedMargin: 0,
+      totalMarginRequired: margin, injectedFunds: startBal,
+      baseCurrency: 'USD', defaultMarginMode: 'cross',
+      isActive, isClosed, accountStatus: status,
+      challengeTemplateId: tmpl.id, createdAt, updatedAt: now - Math.floor(rand() * 7) * DAY,
+      startingBalance: startBal, netWorth, realizedPnl, unrealizedPnl,
+      drawdownPct: drawdown, dailyLossPct: dailyLoss,
+      tradingDays: Math.floor(rand() * 30) + 1,
+      currentPhase: status === 'funded' ? 2 : 1,
+    }
+
+    // ── Aggregate stats ─────────────────────────────────────────────────────
+    totalDeposited += tmpl.fee
+    if (createdAt > now - DAY) signupsToday++
+    if (createdAt > now - 30 * DAY) signupsMonth++
+    if (isClosed) { closedCount++; totalLifetimeDays += daysAgo }
+
+    // Risk metrics for active accounts
+    if (isActive && margin > 0) {
+      const sym = symbols[Math.floor(rand() * symbols.length)]
+      const dir = rand() < 0.6 ? 'long' : 'short'
+      const leverage = Math.floor(rand() * 10) + 1
+      const notional = margin * leverage
+      totalOpenExposure += notional
+      totalOpenPnl += unrealizedPnl
+      if (notional > maxSingleExposure) {
+        maxSingleExposure = notional
+        largestPos = { symbol: sym, notional, account_id: `acc-${i}`, direction: dir }
+      }
+      if (!symExposure[sym]) symExposure[sym] = { long: 0, short: 0 }
+      if (dir === 'long') symExposure[sym].long += notional
+      else symExposure[sym].short += notional
+      if (drawdown > 0.08) accountsNearBreach++
+      if (dailyLoss > 0.04) accountsAtDailyLimit++
+    }
+    if (status === 'breached' && daysAgo <= 1) breachedToday++
+
+    // Drawdown distribution
+    const dBucket = Math.min(4, Math.floor(drawdown * 50))
+    drawdownDist[dBucket]++
+  }
+
+  // ── Generate payouts from funded accounts ─────────────────────────────────
+  const payouts: SeededPayout[] = []
+  let pendingPayouts = 0, pendingPayoutAmt = 0
+
+  for (let i = 0; i < ACCOUNT_COUNT; i++) {
+    const a = accounts[i]
+    if (a.accountStatus !== 'funded' || a.realizedPnl <= 0) continue
+    if (rand() > 0.60) continue // 60% of profitable funded have payouts
+
+    const amount = Math.round(a.realizedPnl * 0.80 * 100) / 100
+    const sRoll = rand()
+    const pStatus = sRoll < 0.55 ? 'paid' : sRoll < 0.75 ? 'approved' : sRoll < 0.92 ? 'pending' : 'rejected'
+    if (pStatus === 'paid') totalPayoutsPaid += amount
+    if (pStatus === 'pending') { pendingPayouts++; pendingPayoutAmt += amount }
+
+    payouts.push({
+      id: `pay-${payouts.length}`, account_id: a.id, user_id: a.userId,
+      user_name: a.userName, user_email: a.userEmail, amount,
+      status: pStatus,
+      method: rand() < 0.7 ? 'crypto' : rand() < 0.5 ? 'bank' : 'paypal',
+      wallet_address: pStatus !== 'rejected' ? `0x${payouts.length.toString(16).padStart(8, '0')}` : null,
+      tx_hash: pStatus === 'paid' ? `0x${(payouts.length * 13).toString(16).padStart(64, '0')}` : null,
+      admin_note: pStatus === 'rejected' ? 'Verification required' : null,
+      requested_at: now - Math.floor(rand() * 30) * DAY,
+      processed_at: pStatus !== 'pending' ? now - Math.floor(rand() * 5) * DAY : null,
+      created_at: now - Math.floor(rand() * 30) * DAY,
+      updated_at: now - Math.floor(rand() * 3) * DAY,
+    })
+  }
+
+  // ── Generate affiliates (~10% of users) ───────────────────────────────────
+  const affiliates: SeededAffiliate[] = []
+  for (let i = 0; i < USER_COUNT; i++) {
+    if (rand() > 0.10) continue
+    const u = users[i]
+    affiliates.push({
+      id: `aff-${affiliates.length}`, userId: u.id, userEmail: u.email, userName: u.name,
+      programId: 'prog-1', programName: 'Standard Affiliate',
+      affiliateCode: `VP-${u.name.split(' ').map(w => w[0]).join('')}${i}`,
+      status: rand() < 0.85 ? 'active' : rand() < 0.5 ? 'pending' : 'suspended',
+      statusReason: null,
+    })
+  }
+
+  // ── Top symbols by exposure ───────────────────────────────────────────────
+  const topSymbols = Object.entries(symExposure)
+    .map(([sym, e]) => ({ symbol: sym, long_notional: Math.round(e.long), short_notional: Math.round(e.short), net: Math.round(e.long - e.short) }))
+    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
+    .slice(0, 5)
+
+  // ── Store in state ────────────────────────────────────────────────────────
+  state.crmUsers = users
+  state.crmAccounts = accounts
+  state.crmPayouts = payouts
+  state.crmAffiliates = affiliates
+  state.crmTemplateAccountCounts = tmplCounts
+
+  state.crmStats = {
+    total_users: USER_COUNT,
+    active_accounts: statusCounts.active,
+    funded_accounts: statusCounts.funded,
+    breached_accounts: statusCounts.breached,
+    passed_accounts: statusCounts.passed,
+    closed_accounts: statusCounts.closed,
+    total_deposited: totalDeposited,
+    total_payouts_paid: Math.round(totalPayoutsPaid),
+    pending_payouts: pendingPayouts,
+    pending_payout_amount: Math.round(pendingPayoutAmt),
+    revenue_today: Math.round(signupsToday * 450),
+    revenue_month: Math.round(signupsMonth * 450),
+    revenue_all_time: totalDeposited,
+    new_signups_today: signupsToday,
+    new_signups_month: signupsMonth,
+    churn_rate: closedCount > 0 ? parseFloat((closedCount / ACCOUNT_COUNT).toFixed(3)) : 0.07,
+    avg_account_lifetime_days: closedCount > 0 ? Math.round(totalLifetimeDays / closedCount) : 45,
+  }
+
+  state.crmRiskMetrics = {
+    total_open_exposure: Math.round(totalOpenExposure),
+    total_open_pnl: Math.round(totalOpenPnl),
+    max_single_account_exposure: Math.round(maxSingleExposure),
+    accounts_near_breach: accountsNearBreach,
+    accounts_at_daily_limit: accountsAtDailyLimit,
+    breached_today: breachedToday,
+    largest_open_position: largestPos,
+    top_symbols_exposure: topSymbols,
+    drawdown_distribution: [
+      { bucket: '0-2%', count: drawdownDist[0] },
+      { bucket: '2-4%', count: drawdownDist[1] },
+      { bucket: '4-6%', count: drawdownDist[2] },
+      { bucket: '6-8%', count: drawdownDist[3] },
+      { bucket: '8-10%', count: drawdownDist[4] },
+    ],
   }
 }
 
@@ -374,8 +701,24 @@ function getMockData(path: string, req?: NextRequest): unknown {
       }
     }
 
-    case 'leaderboard':
-      return Array.from({ length: 20 }, (_, i) => ({ rank: i + 1, user_id: `user-${i + 1}`, username: `Trader${String(i + 1).padStart(3, '0')}`, avatar_url: null, account_id: `acc-${i + 1}`, profit_pct: parseFloat((8.5 - i * 0.3).toFixed(2)), profit_amount: parseFloat((17_000 - i * 600).toFixed(2)), trading_days: Math.max(5, 20 - i), challenge_type: ['instant', '1-step', '2-step'][i % 3], is_funded: i < 3 }))
+    case 'leaderboard': {
+      // Build leaderboard from seeded accounts — top 20 by profit %
+      const lb = state.crmAccounts
+        .filter(a => a.accountStatus === 'active' || a.accountStatus === 'funded')
+        .map(a => ({ acct: a, pct: a.startingBalance > 0 ? (a.realizedPnl / a.startingBalance) * 100 : 0 }))
+        .sort((a, b) => b.pct - a.pct)
+        .slice(0, 20)
+      return lb.map((entry, i) => ({
+        rank: i + 1, user_id: entry.acct.userId,
+        username: entry.acct.userName, avatar_url: null,
+        account_id: entry.acct.id,
+        profit_pct: parseFloat(entry.pct.toFixed(2)),
+        profit_amount: parseFloat(entry.acct.realizedPnl.toFixed(2)),
+        trading_days: entry.acct.tradingDays,
+        challenge_type: entry.acct.challengeTemplateId === 'tmpl-1' ? 'instant' : entry.acct.challengeTemplateId === 'tmpl-2' ? '2-step' : '1-step',
+        is_funded: entry.acct.accountStatus === 'funded',
+      }))
+    }
 
     case 'engine/payouts':
       return [
@@ -383,10 +726,13 @@ function getMockData(path: string, req?: NextRequest): unknown {
         { id: 'p2', account_id: ACCOUNT_ID, user_id: 'mock-user-id', amount: 1800, status: 'approved', method: 'crypto', wallet_address: '0xaB3c...8dF1', tx_hash: null, admin_note: null, requested_at: Date.now() - 3 * 86400_000, processed_at: Date.now() - 1 * 86400_000, created_at: Date.now() - 3 * 86400_000, updated_at: Date.now() - 1 * 86400_000 },
       ]
 
-    case 'admin/payouts':
-      return [
-        { id: 'p3', account_id: ACCOUNT_ID, user_id: 'mock-user-id', user_name: 'Jules Trader', user_email: 'trader@example.com', amount: 5500, status: 'pending', method: 'crypto', wallet_address: '0xaB3c...8dF1', tx_hash: null, admin_note: null, requested_at: Date.now() - 1 * 86400_000, processed_at: null, created_at: Date.now() - 1 * 86400_000, updated_at: Date.now() - 1 * 86400_000 },
-      ]
+    case 'admin/payouts': {
+      const pStatus = req?.nextUrl.searchParams.get('status') ?? ''
+      const pLimit = Math.min(200, parseInt(req?.nextUrl.searchParams.get('limit') ?? '100'))
+      let pFiltered = state.crmPayouts as SeededPayout[]
+      if (pStatus) pFiltered = pFiltered.filter(p => p.status === pStatus)
+      return pFiltered.slice(0, pLimit)
+    }
 
     case 'engine/affiliate':
       return {
@@ -413,11 +759,35 @@ function getMockData(path: string, req?: NextRequest): unknown {
 
     case 'misc/calendar': return []
 
-    case 'admin/users': return Array.from({ length: 40 }, (_, i) => ({ id: `user-${i + 1}`, name: ['Alex Rivera','Jamie Chen','Sam Patel','Morgan Kim','Taylor Liu','Casey Wang','Riley Zhang','Drew Nguyen','Jordan Lee','Quinn Ma'][i % 10], email: `trader${i + 1}@example.com`, emailVerified: i % 5 !== 0, image: null, role: i === 0 ? 'admin' : 'user', banned: i % 12 === 0, banReason: i % 12 === 0 ? 'ToS violation' : null, banExpires: null, twoFactorEnabled: i % 3 === 0, createdAt: Date.now() - (40 - i) * 3 * 86400_000, updatedAt: Date.now() - i * 86400_000, lastSeen: Date.now() - Math.floor(Math.random() * 7 * 86400_000) }))
-    case 'admin/accounts': return Array.from({ length: 55 }, (_, i) => ({ id: `acc-${i + 1}`, userId: `user-${(i % 40) + 1}`, userEmail: `trader${(i % 40) + 1}@example.com`, userName: ['Alex Rivera','Jamie Chen','Sam Patel','Morgan Kim','Taylor Liu'][i % 5], accountType: i % 7 === 0 ? 'demo' : 'prop', name: `Phase ${(i % 3) + 1} — Evaluation`, availableMargin: 200_000 - i * 1_000, reservedMargin: Math.random() * 10_000, totalMarginRequired: Math.random() * 8_000, injectedFunds: 0, baseCurrency: 'USD', defaultMarginMode: 'cross', isActive: i % 8 !== 0, isClosed: i % 8 === 0, accountStatus: ['active','active','active','funded','passed','breached'][i % 6], challengeTemplateId: `tmpl-${(i % 3) + 1}`, createdAt: Date.now() - (55 - i) * 2 * 86400_000, updatedAt: Date.now() - i * 3600_000 }))
-    case 'admin/stats': return { total_users: 1_847, active_accounts: 1_243, funded_accounts: 38, breached_accounts: 94, total_deposited: 12_450_000, total_payouts_paid: 284_000, pending_payouts: 3, pending_payout_amount: 42_000, revenue_today: 18_600, revenue_month: 412_800, revenue_all_time: 3_140_000, new_signups_today: 23, new_signups_month: 612, churn_rate: 0.082, avg_account_lifetime_days: 47 }
-    case 'admin/challenge-templates': return [ { id: 'tmpl-1', name: '100K Instant Funding', description: 'Single-phase instant funding', starting_balance: 100_000, base_currency: 'USD', entry_fee: 549, is_active: true, status: 'active', category: 'paid', account_count: 412, phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.10, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 0, max_trading_days: null, profit_split: 0.80, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }], created_at: Date.now() - 90 * 86400_000, updated_at: Date.now() - 5 * 86400_000 }, { id: 'tmpl-2', name: '50K Standard 2-Step', description: 'Classic two-phase evaluation', starting_balance: 50_000, base_currency: 'USD', entry_fee: 299, is_active: true, status: 'active', category: 'paid', account_count: 688, phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.08, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 5, max_trading_days: 30, profit_split: 0 }, { phase_number: 2, phase_type: 'evaluation', name: 'Phase 2', profit_target: 0.05, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 5, max_trading_days: 60, profit_split: 0.80 }], created_at: Date.now() - 120 * 86400_000, updated_at: Date.now() - 10 * 86400_000 }, { id: 'tmpl-3', name: '200K Elite', description: 'For experienced traders', starting_balance: 200_000, base_currency: 'USD', entry_fee: 1_099, is_active: true, status: 'active', category: 'paid', account_count: 143, phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.08, daily_loss_limit: 0.04, max_drawdown: 0.08, min_trading_days: 10, max_trading_days: 45, profit_split: 0 }, { phase_number: 2, phase_type: 'funded', name: 'Funded', profit_target: 0, daily_loss_limit: 0.04, max_drawdown: 0.08, min_trading_days: 0, max_trading_days: null, profit_split: 0.85 }], created_at: Date.now() - 60 * 86400_000, updated_at: Date.now() - 2 * 86400_000 } ]
-    case 'admin/risk-metrics': return { total_open_exposure: 4_280_000, total_open_pnl: -38_400, max_single_account_exposure: 420_000, accounts_near_breach: 12, accounts_at_daily_limit: 4, breached_today: 2, largest_open_position: { symbol: 'BTC-USD', notional: 185_000, account_id: 'acc-7', direction: 'long' }, top_symbols_exposure: [{ symbol: 'BTC-USD', long_notional: 1_840_000, short_notional: 620_000, net: 1_220_000 }, { symbol: 'ETH-USD', long_notional: 980_000, short_notional: 440_000, net: 540_000 }, { symbol: 'SOL-USD', long_notional: 320_000, short_notional: 180_000, net: 140_000 }], drawdown_distribution: [{ bucket: '0-2%', count: 820 }, { bucket: '2-4%', count: 284 }, { bucket: '4-6%', count: 97 }, { bucket: '6-8%', count: 32 }, { bucket: '8-10%', count: 10 }] }
+    case 'admin/users': {
+      const search = req?.nextUrl.searchParams.get('search')?.toLowerCase() ?? ''
+      const limit = Math.min(500, parseInt(req?.nextUrl.searchParams.get('limit') ?? '200'))
+      const offset = parseInt(req?.nextUrl.searchParams.get('offset') ?? '0')
+      let filtered = state.crmUsers as SeededUser[]
+      if (search) filtered = filtered.filter(u => u.name.toLowerCase().includes(search) || u.email.toLowerCase().includes(search))
+      return filtered.slice(offset, offset + limit)
+    }
+    case 'admin/accounts': {
+      const aSearch = req?.nextUrl.searchParams.get('search')?.toLowerCase() ?? ''
+      const aStatus = req?.nextUrl.searchParams.get('status') ?? ''
+      const aLimit = Math.min(500, parseInt(req?.nextUrl.searchParams.get('limit') ?? '200'))
+      const aOffset = parseInt(req?.nextUrl.searchParams.get('offset') ?? '0')
+      let aFiltered = state.crmAccounts as SeededAccount[]
+      if (aSearch) aFiltered = aFiltered.filter(a => a.userName.toLowerCase().includes(aSearch) || a.userEmail.toLowerCase().includes(aSearch) || a.id.includes(aSearch))
+      if (aStatus) aFiltered = aFiltered.filter(a => a.accountStatus === aStatus)
+      return aFiltered.slice(aOffset, aOffset + aLimit)
+    }
+    case 'admin/stats': return state.crmStats
+    case 'admin/challenge-templates': {
+      const tc = state.crmTemplateAccountCounts
+      return [
+        { id: 'tmpl-1', name: '100K Instant Funding', description: 'Single-phase instant funding', starting_balance: 100_000, base_currency: 'USD', entry_fee: 549, is_active: true, status: 'active', category: 'paid', account_count: tc['tmpl-1'] ?? 0, phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.10, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 0, max_trading_days: null, profit_split: 0.80, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }], created_at: Date.now() - 90 * 86400_000, updated_at: Date.now() - 5 * 86400_000 },
+        { id: 'tmpl-2', name: '50K Standard 2-Step', description: 'Classic two-phase evaluation', starting_balance: 50_000, base_currency: 'USD', entry_fee: 299, is_active: true, status: 'active', category: 'paid', account_count: tc['tmpl-2'] ?? 0, phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.08, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 5, max_trading_days: 30, profit_split: 0 }, { phase_number: 2, phase_type: 'evaluation', name: 'Phase 2', profit_target: 0.05, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 5, max_trading_days: 60, profit_split: 0.80 }], created_at: Date.now() - 120 * 86400_000, updated_at: Date.now() - 10 * 86400_000 },
+        { id: 'tmpl-3', name: '200K Elite', description: 'For experienced traders', starting_balance: 200_000, base_currency: 'USD', entry_fee: 1_099, is_active: true, status: 'active', category: 'paid', account_count: tc['tmpl-3'] ?? 0, phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.08, daily_loss_limit: 0.04, max_drawdown: 0.08, min_trading_days: 10, max_trading_days: 45, profit_split: 0 }, { phase_number: 2, phase_type: 'funded', name: 'Funded', profit_target: 0, daily_loss_limit: 0.04, max_drawdown: 0.08, min_trading_days: 0, max_trading_days: null, profit_split: 0.85 }], created_at: Date.now() - 60 * 86400_000, updated_at: Date.now() - 2 * 86400_000 },
+      ]
+    }
+    case 'admin/risk-metrics': return state.crmRiskMetrics
+    case 'admin/affiliates': return state.crmAffiliates.slice(0, 200)
     default:
       if (path.startsWith('engine/candles') && req) {
         const symbol = req.nextUrl.searchParams.get('symbol') ?? 'BTC-USD'
