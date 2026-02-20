@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import { Search, History, Filter, ArrowUpDown } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import { useAccounts, useTradingData } from '@/lib/hooks'
+import { useAccounts, useClosedPositions } from '@/lib/hooks'
 import type { Position } from '@/types'
 
 function Skeleton({ className }: { className?: string }) {
@@ -23,12 +23,11 @@ export default function HistoryPage() {
 
   const { data: accounts, isLoading: loadingAccounts } = useAccounts()
   const account = accounts?.[0]
-  const { data: tradingData, isLoading: loadingTrading } = useTradingData(account?.id)
+  const { data: closedRaw, isLoading: loadingClosed } = useClosedPositions(account?.id)
 
-  const loading = loadingAccounts || loadingTrading
+  const loading = loadingAccounts || loadingClosed
 
-  const allPositions: Position[] = tradingData?.positions ?? []
-  const closedPositions = allPositions.filter(p => p.status === 'closed')
+  const closedPositions: Position[] = closedRaw ?? []
 
   const filtered = useMemo(() => {
     let list = [...closedPositions]

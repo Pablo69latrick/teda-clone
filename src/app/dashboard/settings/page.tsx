@@ -129,19 +129,49 @@ export default function SettingsPage() {
 
   const saveProfile = async () => {
     setSavingProfile(true)
-    await new Promise(r => setTimeout(r, 700))
-    setSavingProfile(false)
-    showToast('success', 'Profile updated successfully')
+    try {
+      const res = await fetch('/api/proxy/settings/update-profile', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        showToast('error', err.error ?? 'Failed to update profile')
+      } else {
+        showToast('success', 'Profile updated successfully')
+      }
+    } catch {
+      showToast('error', 'Network error')
+    } finally {
+      setSavingProfile(false)
+    }
   }
 
   const changePassword = async () => {
     if (newPw !== confirmPw) { showToast('error', 'Passwords do not match'); return }
     if (newPw.length < 8)    { showToast('error', 'Password must be at least 8 characters'); return }
     setSavingPw(true)
-    await new Promise(r => setTimeout(r, 800))
-    setSavingPw(false)
-    setCurrentPw(''); setNewPw(''); setConfirmPw('')
-    showToast('success', 'Password changed successfully')
+    try {
+      const res = await fetch('/api/proxy/settings/change-password', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_password: newPw }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        showToast('error', err.error ?? 'Failed to change password')
+      } else {
+        setCurrentPw(''); setNewPw(''); setConfirmPw('')
+        showToast('success', 'Password changed successfully')
+      }
+    } catch {
+      showToast('error', 'Network error')
+    } finally {
+      setSavingPw(false)
+    }
   }
 
   const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [

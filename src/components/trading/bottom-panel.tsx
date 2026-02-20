@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronUp, X, Minus, Plus, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import { useTradingData, useOrders, useActivity, type ActivityItem } from '@/lib/hooks'
+import { useTradingData, useClosedPositions, useOrders, useActivity, type ActivityItem } from '@/lib/hooks'
 import { useSWRConfig } from 'swr'
 import type { Position, Order } from '@/types'
 
@@ -443,6 +443,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
 
   const { mutate }                      = useSWRConfig()
   const { data: tradingData }           = useTradingData(accountId)
+  const { data: closedRaw }             = useClosedPositions(accountId)
   const { data: pendingOrders }         = useOrders(accountId)
   const { data: activityFeed }          = useActivity(accountId)
 
@@ -472,6 +473,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       if (success) {
         mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
         mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
         mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
         mutate(`/api/proxy/engine/challenge-status?account_id=${accountId}`)
         mutate('/api/proxy/actions/accounts')
@@ -505,6 +507,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       if (success) {
         mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
         mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
         mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
         mutate(`/api/proxy/engine/challenge-status?account_id=${accountId}`)
         mutate('/api/proxy/actions/accounts')
@@ -541,7 +544,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
   const account          = tradingData?.account
   const prices           = tradingData?.prices ?? {}
   const openPositions    = tradingData?.positions?.filter(p => p.status === 'open') ?? []
-  const closedPositions  = tradingData?.positions?.filter(p => p.status === 'closed') ?? []
+  const closedPositions  = closedRaw ?? []
   const orders           = pendingOrders ?? []
   const activity         = activityFeed ?? []
 

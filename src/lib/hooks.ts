@@ -91,6 +91,16 @@ export function useOrders(accountId: string | undefined) {
   )
 }
 
+// ─── Closed positions (history) ────────────────────────────────────────────
+
+export function useClosedPositions(accountId: string | undefined) {
+  return useSWR<Position[]>(
+    accountId ? `/api/proxy/engine/closed-positions?account_id=${accountId}` : null,
+    fetcher,
+    { revalidateOnFocus: false, dedupingInterval: 30_000 }
+  )
+}
+
 // ─── Challenge status ──────────────────────────────────────────────────────
 
 export function useChallengeStatus(accountId: string | undefined) {

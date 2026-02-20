@@ -96,10 +96,48 @@ async function handleSupabase(req: NextRequest, apiPath: string): Promise<NextRe
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return NextResponse.json([], { status: 401 })
 
-    const { data: accounts } = await supabase
+    let { data: accounts } = await supabase
       .from('accounts').select('*')
       .eq('user_id', session.user.id).eq('is_active', true)
       .order('created_at', { ascending: true })
+
+    // Auto-create a default evaluation account if the user has none
+    if (!accounts || accounts.length === 0) {
+      const admin = (await import('@/lib/supabase/server')).createSupabaseAdminClient()
+
+      // Pick the first challenge template as default
+      const { data: template } = await admin
+        .from('challenge_templates').select('id, starting_balance').order('created_at').limit(1).single()
+
+      const startBal = template?.starting_balance ?? 200_000
+
+      const { data: newAccount } = await admin
+        .from('accounts')
+        .insert({
+          user_id:              session.user.id,
+          name:                 'Phase 1 — Evaluation',
+          account_type:         'prop',
+          base_currency:        'USD',
+          default_margin_mode:  'cross',
+          starting_balance:     startBal,
+          available_margin:     startBal,
+          reserved_margin:      0,
+          total_margin_required: 0,
+          injected_funds:       startBal,
+          net_worth:            startBal,
+          total_pnl:            0,
+          unrealized_pnl:       0,
+          realized_pnl:         0,
+          is_active:            true,
+          is_closed:            false,
+          account_status:       'active',
+          current_phase:        1,
+          challenge_template_id: template?.id ?? null,
+        })
+        .select()
+
+      accounts = newAccount ?? []
+    }
 
     return NextResponse.json((accounts ?? []).map(a => ({
       ...a,
@@ -144,6 +182,28 @@ async function handleSupabase(req: NextRequest, apiPath: string): Promise<NextRe
       .from('positions').select('*')
       .eq('account_id', accountId).eq('status', 'open')
       .order('created_at', { ascending: false })
+
+    return NextResponse.json((positions ?? []).map(p => ({
+      ...p,
+      entry_timestamp: typeof p.entry_timestamp === 'number' ? p.entry_timestamp : toEpochMs(p.entry_timestamp as unknown as string),
+      exit_timestamp:  p.exit_timestamp ? (typeof p.exit_timestamp === 'number' ? p.exit_timestamp : toEpochMs(p.exit_timestamp as unknown as string)) : null,
+      created_at: toEpochMs(p.created_at),
+      updated_at: toEpochMs(p.updated_at),
+    })))
+  }
+
+  // ── engine/closed-positions ───────────────────────────────────────────────
+  if (apiPath === 'engine/closed-positions') {
+    const accountId = req.nextUrl.searchParams.get('account_id')
+    const supabase = await createSupabaseServerClient()
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+
+    const { data: positions } = await supabase
+      .from('positions').select('*')
+      .eq('account_id', accountId).eq('status', 'closed')
+      .order('exit_timestamp', { ascending: false })
+      .limit(200)
 
     return NextResponse.json((positions ?? []).map(p => ({
       ...p,
@@ -240,9 +300,50 @@ async function handleSupabase(req: NextRequest, apiPath: string): Promise<NextRe
       ? account.realized_pnl / account.starting_balance
       : 0
 
+    // Count distinct trading days (days with non-zero PnL)
     const { count: tradingDays } = await supabase
       .from('equity_history').select('*', { count: 'exact', head: true })
       .eq('account_id', accountId).neq('pnl', 0)
+
+    // Calculate current daily loss: sum of realized PnL from today's closed positions
+    // + unrealized PnL from currently open positions
+    const startOfDayUtc = new Date()
+    startOfDayUtc.setUTCHours(0, 0, 0, 0)
+
+    const [closedTodayRes, openPosRes] = await Promise.all([
+      supabase
+        .from('positions').select('realized_pnl')
+        .eq('account_id', accountId).eq('status', 'closed')
+        .gte('exit_timestamp', startOfDayUtc.getTime()),
+      supabase
+        .from('positions').select('direction, quantity, leverage, entry_price, symbol')
+        .eq('account_id', accountId).eq('status', 'open'),
+    ])
+
+    const realizedToday = (closedTodayRes.data ?? []).reduce(
+      (s, p) => s + Number(p.realized_pnl ?? 0), 0
+    )
+
+    // Get current prices to compute unrealized PnL
+    const { data: pricesRaw } = await supabase
+      .from('price_cache').select('symbol, current_price')
+    const priceMap: Record<string, number> = {}
+    for (const pr of pricesRaw ?? []) priceMap[pr.symbol] = Number(pr.current_price ?? 0)
+
+    const unrealizedToday = (openPosRes.data ?? []).reduce((s, p) => {
+      const mp = priceMap[p.symbol] ?? Number(p.entry_price)
+      const diff = p.direction === 'long'
+        ? mp - Number(p.entry_price)
+        : Number(p.entry_price) - mp
+      return s + diff * Number(p.quantity) * Number(p.leverage)
+    }, 0)
+
+    // Daily loss = how much below starting equity for the day we currently are
+    // Negative means loss; we express as positive fraction for the UI
+    const dailyPnl = realizedToday + unrealizedToday
+    const currentDailyLoss = account.starting_balance > 0
+      ? Math.max(0, -dailyPnl / account.starting_balance)
+      : 0
 
     return NextResponse.json({
       account_id: accountId,
@@ -252,7 +353,7 @@ async function handleSupabase(req: NextRequest, apiPath: string): Promise<NextRe
       daily_loss_limit: rule.daily_loss_limit ?? 0.05,
       max_drawdown: rule.max_drawdown ?? 0.10,
       current_profit: currentProfit,
-      current_daily_loss: 0,
+      current_daily_loss: currentDailyLoss,
       current_drawdown: account.starting_balance > 0
         ? Math.max(0, (account.starting_balance - account.net_worth) / account.starting_balance)
         : 0,
@@ -1019,6 +1120,57 @@ async function handleSupabasePost(req: NextRequest, apiPath: string): Promise<Ne
     }
 
     return NextResponse.json({ success: true, order_id: orderId })
+  }
+
+  // ── settings/update-profile ─────────────────────────────────────────────
+  if (apiPath === 'settings/update-profile') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    if (typeof body.name === 'string' && body.name.trim().length > 0) {
+      updates.name = body.name.trim().slice(0, 100)
+    }
+    if (typeof body.email === 'string' && body.email.includes('@')) {
+      updates.email = body.email.trim().toLowerCase().slice(0, 200)
+    }
+
+    const admin = createSupabaseAdminClient()
+    const { error } = await admin.from('profiles').update(updates).eq('id', user.id)
+    if (error) {
+      console.error('[update-profile] error:', error)
+      return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 })
+    }
+
+    // If email changed, also update Supabase Auth metadata
+    if (updates.email) {
+      await admin.auth.admin.updateUserById(user.id, { email: updates.email as string })
+    }
+
+    return NextResponse.json({ success: true })
+  }
+
+  // ── settings/change-password ────────────────────────────────────────────
+  if (apiPath === 'settings/change-password') {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const newPassword = body.new_password
+    if (typeof newPassword !== 'string' || newPassword.length < 8) {
+      return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    if (error) {
+      console.error('[change-password] error:', error)
+      return NextResponse.json({ error: error.message || 'Failed to change password' }, { status: 500 })
+    }
+
+    return NextResponse.json({ success: true })
   }
 
   return null
