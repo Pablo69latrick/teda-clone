@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   ChevronDown, ChevronUp, X, Minus, Plus,
   TrendingUp, TrendingDown, AlertTriangle,
-  Pencil, ArrowLeftRight, Share2,
+  Pencil, ArrowLeftRight,
 } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -36,6 +36,27 @@ function usePnlFlash(pnl: number): 'up' | 'down' | null {
   }, [pnl])
 
   return flash
+}
+
+// ─── Toast system ─────────────────────────────────────────────────────────────
+interface Toast { type: 'success' | 'error'; msg: string; id: number }
+
+function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (toasts.length === 0) return null
+  return (
+    <div className="absolute top-10 right-2 z-50 flex flex-col gap-1.5 pointer-events-none">
+      {toasts.map(t => (
+        <div key={t.id}
+          className={cn(
+            'pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-lg border text-xs shadow-lg backdrop-blur-sm animate-in slide-in-from-right-3 fade-in duration-200',
+            t.type === 'success' ? 'bg-profit/15 border-profit/30 text-profit' : 'bg-loss/15 border-loss/30 text-loss'
+          )}>
+          <span className="truncate max-w-[240px]">{t.msg}</span>
+          <button onClick={() => onDismiss(t.id)} className="opacity-60 hover:opacity-100 shrink-0">✕</button>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 // ─── Partial Close Modal ──────────────────────────────────────────────────────
@@ -190,8 +211,8 @@ function LivePositionRow({
 
   return (
     <div className={cn(
-      'group border-b border-border/20 transition-colors',
-      closing ? 'opacity-50 pointer-events-none' : 'hover:bg-muted/10'
+      'group border-b border-border/20 transition-all duration-200',
+      closing ? 'opacity-30 scale-[0.98] pointer-events-none' : 'hover:bg-muted/10'
     )}>
       <div className="grid px-3 py-2 text-xs min-w-[900px]"
         style={{ gridTemplateColumns: '90px 50px 80px 90px 90px 80px 80px 70px 80px 120px 70px' }}>
@@ -215,7 +236,7 @@ function LivePositionRow({
           {nearLiq && <AlertTriangle className="size-2.5 shrink-0" />}
           {pos.liquidation_price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
         </span>
-        {/* Fees (trade + overnight + funding) */}
+        {/* Fees */}
         <span className="tabular-nums text-muted-foreground">
           {formatCurrency(pos.total_fees)}
         </span>
@@ -308,8 +329,8 @@ function OrderRow({
 
   return (
     <div className={cn(
-      'group grid px-3 py-2 text-xs border-b border-border/20 hover:bg-muted/10 transition-colors min-w-[640px]',
-      cancelling && 'opacity-40 pointer-events-none'
+      'group grid px-3 py-2 text-xs border-b border-border/20 hover:bg-muted/10 transition-all duration-200 min-w-[640px]',
+      cancelling && 'opacity-30 scale-[0.98] pointer-events-none'
     )} style={{ gridTemplateColumns: '90px 60px 70px 80px 80px 80px 60px 60px' }}>
       <span className="font-semibold">{order.symbol}</span>
       <Badge variant={order.direction as 'long' | 'short'} className="text-[10px] px-1.5 py-0 h-4 w-fit">
@@ -410,28 +431,69 @@ function AccountStatsBar({
   )
 }
 
+// ─── Revalidate all trading caches ────────────────────────────────────────────
+function revalidateAll(mutate: ReturnType<typeof useSWRConfig>['mutate'], accountId: string) {
+  // Force immediate re-fetch for all trading data endpoints
+  const keys = [
+    `/api/proxy/engine/trading-data?account_id=${accountId}`,
+    `/api/proxy/engine/positions?account_id=${accountId}`,
+    `/api/proxy/engine/closed-positions?account_id=${accountId}`,
+    `/api/proxy/engine/orders?account_id=${accountId}`,
+    `/api/proxy/engine/activity?account_id=${accountId}`,
+    `/api/proxy/engine/challenge-status?account_id=${accountId}`,
+    `/api/proxy/engine/equity-history?account_id=${accountId}`,
+    '/api/proxy/actions/accounts',
+  ]
+  for (const key of keys) {
+    mutate(key)
+  }
+}
+
 // ─── Main panel ───────────────────────────────────────────────────────────────
 export function BottomPanel({ accountId }: BottomPanelProps) {
   const [activeTab, setActiveTab]       = useState<BottomTab>('positions')
   const [collapsed, setCollapsed]       = useState(false)
   const [closingId, setClosingId]       = useState<string | null>(null)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
-  const [closeError, setCloseError]     = useState<string | null>(null)
   const [partialPos, setPartialPos]     = useState<Position | null>(null)
   const [partialLoading, setPartialLoading] = useState(false)
+  const [toasts, setToasts]             = useState<Toast[]>([])
+  const toastIdRef                      = useRef(0)
 
   const { mutate }            = useSWRConfig()
-  const { data: tradingData } = useTradingData(accountId)
-  const { data: closedRaw }   = useClosedPositions(accountId)
+  const { data: tradingData, mutate: mutateTradingData } = useTradingData(accountId)
+  const { data: closedRaw, mutate: mutateClosed }   = useClosedPositions(accountId)
   const { data: pendingOrders } = useOrders(accountId)
   const { data: activityFeed } = useActivity(accountId)
 
-  // ── Close position ──
+  const addToast = useCallback((type: 'success' | 'error', msg: string) => {
+    const id = ++toastIdRef.current
+    setToasts(prev => [...prev.slice(-3), { type, msg, id }])
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000)
+  }, [])
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [])
+
+  // ── Close position (with optimistic update) ──
   const handleClose = useCallback(async (positionId: string) => {
     if (closingId) return
     setClosingId(positionId)
-    setCloseError(null)
-    let success = false
+
+    // Optimistic: remove from open positions instantly
+    const prevPositions = tradingData?.positions ?? []
+    const closedPos = prevPositions.find(p => p.id === positionId)
+    const optimisticPositions = prevPositions.filter(p => p.id !== positionId)
+
+    // Optimistic update on trading data
+    if (tradingData) {
+      mutateTradingData(
+        { ...tradingData, positions: optimisticPositions },
+        false // don't revalidate yet
+      )
+    }
+
     try {
       const res = await fetch('/api/proxy/engine/close-position', {
         method: 'POST', credentials: 'include',
@@ -440,28 +502,45 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       })
       if (!res.ok) {
         const errJson = await res.json().catch(() => null)
-        setCloseError(errJson?.error ?? `Close failed (${res.status})`)
-      } else { success = true }
+        addToast('error', errJson?.error ?? `Close failed (${res.status})`)
+        // Rollback optimistic update
+        if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
+      } else {
+        const result = await res.json()
+        const pnl = result.realized_pnl ?? 0
+        const pnlStr = pnl >= 0 ? `+${formatCurrency(pnl)}` : formatCurrency(pnl)
+        addToast('success', `${closedPos?.symbol ?? ''} closed · ${pnlStr}`)
+
+        // Switch to closed positions tab to show the result
+        setActiveTab('history')
+
+        // Force revalidate all caches
+        revalidateAll(mutate, accountId)
+        mutateTradingData()
+        mutateClosed()
+      }
     } catch (e) {
-      setCloseError(e instanceof Error ? e.message : 'Network error')
+      addToast('error', e instanceof Error ? e.message : 'Network error')
+      // Rollback
+      if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
     } finally {
       setClosingId(null)
-      if (success) {
-        mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/challenge-status?account_id=${accountId}`)
-        mutate('/api/proxy/actions/accounts')
-      }
     }
-  }, [accountId, closingId, mutate])
+  }, [accountId, closingId, mutate, tradingData, mutateTradingData, mutateClosed, addToast])
 
-  // ── Partial close ──
+  // ── Partial close (with optimistic update) ──
   const handlePartialClose = useCallback(async (pos: Position, qty: number) => {
     setPartialLoading(true)
-    setCloseError(null)
-    let success = false
+
+    // Optimistic: reduce quantity in the position
+    const prevPositions = tradingData?.positions ?? []
+    if (tradingData) {
+      const optimisticPositions = prevPositions.map(p =>
+        p.id === pos.id ? { ...p, quantity: p.quantity - qty } : p
+      )
+      mutateTradingData({ ...tradingData, positions: optimisticPositions }, false)
+    }
+
     try {
       const res = await fetch('/api/proxy/engine/partial-close', {
         method: 'POST', credentials: 'include',
@@ -470,30 +549,44 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       })
       if (!res.ok) {
         const errJson = await res.json().catch(() => null)
-        setCloseError(errJson?.error ?? `Partial close failed (${res.status})`)
-      } else { success = true; setPartialPos(null) }
+        addToast('error', errJson?.error ?? `Partial close failed (${res.status})`)
+        // Rollback
+        if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
+      } else {
+        const result = await res.json()
+        const pnl = result.realized_pnl ?? 0
+        const pnlStr = pnl >= 0 ? `+${formatCurrency(pnl)}` : formatCurrency(pnl)
+        addToast('success', `${pos.symbol} partial close ${qty} lots · ${pnlStr}`)
+        setPartialPos(null)
+
+        revalidateAll(mutate, accountId)
+        mutateTradingData()
+        mutateClosed()
+      }
     } catch (e) {
-      setCloseError(e instanceof Error ? e.message : 'Network error')
+      addToast('error', e instanceof Error ? e.message : 'Network error')
+      if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
     } finally {
       setPartialLoading(false)
-      if (success) {
-        mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/challenge-status?account_id=${accountId}`)
-        mutate('/api/proxy/actions/accounts')
-      }
     }
-  }, [accountId, mutate])
+  }, [accountId, mutate, tradingData, mutateTradingData, mutateClosed, addToast])
 
-  // ── Reverse position (close + open opposite) ──
+  // ── Reverse position (close + open opposite, with optimistic) ──
   const handleReverse = useCallback(async (pos: Position) => {
     if (closingId) return
     setClosingId(pos.id)
-    setCloseError(null)
+
+    // Optimistic: remove from list (will be replaced by new opposite position)
+    const prevPositions = tradingData?.positions ?? []
+    if (tradingData) {
+      mutateTradingData(
+        { ...tradingData, positions: prevPositions.filter(p => p.id !== pos.id) },
+        false
+      )
+    }
+
     try {
-      // 1. Close current position
+      // 1. Close
       const closeRes = await fetch('/api/proxy/engine/close-position', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -501,11 +594,12 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       })
       if (!closeRes.ok) {
         const errJson = await closeRes.json().catch(() => null)
-        setCloseError(errJson?.error ?? 'Reverse failed: could not close position')
+        addToast('error', errJson?.error ?? 'Reverse failed: could not close')
+        if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
         return
       }
 
-      // 2. Open opposite direction
+      // 2. Open opposite
       const newDirection = pos.direction === 'long' ? 'short' : 'long'
       const openRes = await fetch('/api/proxy/engine/orders', {
         method: 'POST', credentials: 'include',
@@ -522,26 +616,26 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       })
       if (!openRes.ok) {
         const errJson = await openRes.json().catch(() => null)
-        setCloseError(errJson?.message ?? 'Reverse failed: could not open opposite position')
+        addToast('error', errJson?.message ?? 'Reverse: could not open opposite')
+      } else {
+        const sideLabel = newDirection === 'long' ? 'Buy' : 'Sell'
+        addToast('success', `${pos.symbol} reversed → ${sideLabel}`)
       }
     } catch (e) {
-      setCloseError(e instanceof Error ? e.message : 'Network error')
+      addToast('error', e instanceof Error ? e.message : 'Network error')
+      if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
     } finally {
       setClosingId(null)
-      mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
-      mutate('/api/proxy/actions/accounts')
+      revalidateAll(mutate, accountId)
+      mutateTradingData()
+      mutateClosed()
     }
-  }, [accountId, closingId, mutate])
+  }, [accountId, closingId, mutate, tradingData, mutateTradingData, mutateClosed, addToast])
 
-  // ── Cancel order ──
+  // ── Cancel order (with optimistic update) ──
   const handleCancelOrder = useCallback(async (orderId: string) => {
     if (cancellingId) return
     setCancellingId(orderId)
-    setCloseError(null)
     try {
       const res = await fetch('/api/proxy/engine/cancel-order', {
         method: 'POST', credentials: 'include',
@@ -550,17 +644,17 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       })
       if (!res.ok) {
         const errJson = await res.json().catch(() => null)
-        setCloseError(errJson?.error ?? `Cancel failed (${res.status})`)
+        addToast('error', errJson?.error ?? `Cancel failed (${res.status})`)
       } else {
-        mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
-        mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
+        addToast('success', 'Order cancelled')
+        revalidateAll(mutate, accountId)
       }
     } catch (e) {
-      setCloseError(e instanceof Error ? e.message : 'Network error')
+      addToast('error', e instanceof Error ? e.message : 'Network error')
     } finally {
       setCancellingId(null)
     }
-  }, [accountId, cancellingId, mutate])
+  }, [accountId, cancellingId, mutate, addToast])
 
   const account          = tradingData?.account
   const prices           = tradingData?.prices ?? {}
@@ -604,7 +698,10 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
         document.body
       )}
 
-      <div className="flex flex-col h-full bg-card border-t border-border/50 overflow-hidden">
+      <div className="relative flex flex-col h-full bg-card border-t border-border/50 overflow-hidden">
+        {/* Toast notifications */}
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
         {/* Account Stats Bar (TradeLocker style) */}
         <AccountStatsBar
           balance={balance + totalRealizedPnl}
@@ -638,14 +735,6 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
             {collapsed ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
         </div>
-
-        {/* Error banner */}
-        {closeError && (
-          <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-loss/10 border-b border-loss/30 text-xs text-loss shrink-0">
-            <span className="truncate">⚠ {closeError}</span>
-            <button onClick={() => setCloseError(null)} className="shrink-0 opacity-70 hover:opacity-100">✕</button>
-          </div>
-        )}
 
         {!collapsed && (
           <div className="flex-1 overflow-y-auto custom-scrollbar">

@@ -115,11 +115,14 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
         : `${side.toUpperCase()} ${qty} ${symbol} ${effectiveOrderType} order placed`
       showToast('success', filledMsg)
 
-      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+      // Force-revalidate all trading caches immediately
       mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
-      mutate('/api/proxy/actions/accounts')
-      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
       mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+      mutate(`/api/proxy/engine/equity-history?account_id=${accountId}`)
+      mutate('/api/proxy/actions/accounts')
 
       setQuantity(instrument?.min_order_size?.toString() ?? '0.01')
       setLimitPrice('')
