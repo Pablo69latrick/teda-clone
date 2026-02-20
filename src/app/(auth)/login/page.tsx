@@ -10,7 +10,7 @@ import { useAuth } from '@/lib/auth-context'
 
 // Inner component — useSearchParams requires Suspense boundary
 function LoginForm() {
-  const { signIn, submitting, error, clearError } = useAuth()
+  const { signIn, signInWithGoogle, submitting, error, clearError } = useAuth()
   const searchParams = useSearchParams()
   const justRegistered = searchParams.get('registered') === '1'
 
@@ -100,7 +100,7 @@ function LoginForm() {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs font-medium text-muted-foreground">Password</label>
-                <Link href="#" className="text-[10px] text-primary hover:text-primary/80 transition-colors">
+                <Link href="/forgot-password" className="text-[10px] text-primary hover:text-primary/80 transition-colors">
                   Forgot password?
                 </Link>
               </div>
@@ -146,7 +146,7 @@ function LoginForm() {
             </div>
           </div>
 
-          <Button variant="outline" className="w-full h-10 text-sm gap-2" type="button">
+          <Button variant="outline" className="w-full h-10 text-sm gap-2" type="button" onClick={() => signInWithGoogle()} disabled={submitting}>
             <svg className="size-4" viewBox="0 0 24 24">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
               <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>

@@ -36,6 +36,7 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   signIn: (email: string, password: string) => Promise<void>
   signUp: (name: string, email: string, password: string) => Promise<void>
+  signInWithGoogle: () => Promise<void>
   signOut: () => Promise<void>
   clearError: () => void
 }
@@ -170,6 +171,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [router])
 
+  // ── Sign in with Google (OAuth) ──────────────────────────────────────────
+  const signInWithGoogle = useCallback(async () => {
+    setState(s => ({ ...s, submitting: true, error: null }))
+    try {
+      if (isBrowserSupabaseConfigured()) {
+        const supabase = await getSupabase()
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: `${window.location.origin}/auth/callback`,
+          },
+        })
+        if (error) throw new Error(error.message)
+        // Browser will redirect to Google — state stays submitting until redirect
+      } else {
+        // Mock mode: simulate Google sign-in with a mock user
+        const mockUser = {
+          id: 'mock-google-user',
+          name: 'Google User',
+          email: 'google.user@gmail.com',
+          emailVerified: true,
+          image: null,
+          role: 'user' as const,
+          banned: false,
+          banReason: null,
+          banExpires: null,
+          twoFactorEnabled: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        setState(s => ({ ...s, user: mockUser, submitting: false }))
+        router.push('/dashboard/overview')
+      }
+    } catch (err) {
+      setState(s => ({
+        ...s,
+        submitting: false,
+        error: err instanceof Error ? err.message : 'Google sign-in failed.',
+      }))
+    }
+  }, [router])
+
   // ── Sign out ──────────────────────────────────────────────────────────────
   const signOut = useCallback(async () => {
     setState(s => ({ ...s, submitting: true }))
@@ -194,7 +237,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ ...state, signIn, signUp, signOut, clearError }}>
+    <AuthContext.Provider value={{ ...state, signIn, signUp, signInWithGoogle, signOut, clearError }}>
       {children}
     </AuthContext.Provider>
   )
