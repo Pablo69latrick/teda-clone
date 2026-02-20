@@ -3,8 +3,11 @@
 /**
  * SWR hooks for all VerticalProp API endpoints.
  *
- * All requests go through our Next.js /api/proxy/* routes to avoid CORS issues
- * and to attach the session cookie server-side.
+ * Performance-optimised:
+ * - dedupingInterval prevents duplicate requests from multiple components
+ * - revalidateOnFocus: false avoids thundering-herd on tab switch
+ * - refreshInterval tuned per-endpoint criticality
+ * - keepPreviousData avoids layout flash during revalidation
  */
 
 import useSWR from 'swr'
@@ -37,6 +40,15 @@ const fetcher = async <T>(url: string): Promise<T> => {
   return res.json() as Promise<T>
 }
 
+// ─── Shared SWR defaults for high-frequency trading hooks ─────────────────
+
+const LIVE_OPTS = {
+  revalidateOnFocus: false,
+  revalidateOnReconnect: true,
+  keepPreviousData: true,     // avoids layout flash during revalidation
+  errorRetryCount: 3,
+} as const
+
 // ─── Session ───────────────────────────────────────────────────────────────
 
 export function useSession() {
@@ -61,7 +73,11 @@ export function useTradingData(accountId: string | undefined) {
   return useSWR<TradingData>(
     accountId ? `/api/proxy/engine/trading-data?account_id=${accountId}` : null,
     fetcher,
-    { refreshInterval: 2_000 }  // poll every 2s for live prices
+    {
+      ...LIVE_OPTS,
+      refreshInterval: 3_000,         // 3s — balanced between freshness and load
+      dedupingInterval: 2_000,        // dedup within 2s window
+    }
   )
 }
 
@@ -80,7 +96,11 @@ export function usePositions(accountId: string | undefined) {
   return useSWR<Position[]>(
     accountId ? `/api/proxy/engine/positions?account_id=${accountId}` : null,
     fetcher,
-    { refreshInterval: 2_000 }
+    {
+      ...LIVE_OPTS,
+      refreshInterval: 3_000,
+      dedupingInterval: 2_000,
+    }
   )
 }
 
@@ -90,7 +110,11 @@ export function useOrders(accountId: string | undefined) {
   return useSWR<Order[]>(
     accountId ? `/api/proxy/engine/orders?account_id=${accountId}` : null,
     fetcher,
-    { refreshInterval: 5_000 }
+    {
+      ...LIVE_OPTS,
+      refreshInterval: 5_000,
+      dedupingInterval: 3_000,
+    }
   )
 }
 
@@ -100,7 +124,7 @@ export function useClosedPositions(accountId: string | undefined) {
   return useSWR<Position[]>(
     accountId ? `/api/proxy/engine/closed-positions?account_id=${accountId}` : null,
     fetcher,
-    { revalidateOnFocus: false, dedupingInterval: 30_000 }
+    { revalidateOnFocus: false, dedupingInterval: 30_000, keepPreviousData: true }
   )
 }
 
@@ -110,7 +134,11 @@ export function useChallengeStatus(accountId: string | undefined) {
   return useSWR<ChallengeStatus>(
     accountId ? `/api/proxy/engine/challenge-status?account_id=${accountId}` : null,
     fetcher,
-    { refreshInterval: 10_000 }
+    {
+      ...LIVE_OPTS,
+      refreshInterval: 15_000,        // challenge status doesn't need sub-10s
+      dedupingInterval: 10_000,
+    }
   )
 }
 
@@ -132,7 +160,7 @@ export function useCandles(symbol: string, interval: string) {
     {
       revalidateOnFocus: false,
       dedupingInterval: 60_000,
-      // Poll every minute for live candle updates
+      keepPreviousData: true,
       refreshInterval: interval === '1m' ? 10_000 : interval === '5m' ? 30_000 : 60_000,
     }
   )
@@ -149,28 +177,26 @@ export function useLeaderboard() {
 
 // ─── Admin hooks ───────────────────────────────────────────────────────────
 
+const ADMIN_OPTS = {
+  revalidateOnFocus: false,
+  dedupingInterval: 30_000,
+  keepPreviousData: true,
+} as const
+
 export function useAdminUsers() {
-  return useSWR<AdminUser[]>('/api/proxy/admin/users', fetcher, {
-    revalidateOnFocus: false,
-  })
+  return useSWR<AdminUser[]>('/api/proxy/admin/users', fetcher, ADMIN_OPTS)
 }
 
 export function useAdminAccounts() {
-  return useSWR<AdminAccount[]>('/api/proxy/admin/accounts', fetcher, {
-    revalidateOnFocus: false,
-  })
+  return useSWR<AdminAccount[]>('/api/proxy/admin/accounts', fetcher, ADMIN_OPTS)
 }
 
 export function useAdminTemplates() {
-  return useSWR<ChallengeTemplate[]>('/api/proxy/admin/challenge-templates', fetcher, {
-    revalidateOnFocus: false,
-  })
+  return useSWR<ChallengeTemplate[]>('/api/proxy/admin/challenge-templates', fetcher, ADMIN_OPTS)
 }
 
 export function useAdminAffiliates() {
-  return useSWR<Affiliate[]>('/api/proxy/admin/affiliates', fetcher, {
-    revalidateOnFocus: false,
-  })
+  return useSWR<Affiliate[]>('/api/proxy/admin/affiliates', fetcher, ADMIN_OPTS)
 }
 
 // ─── Admin stats ───────────────────────────────────────────────────────────
@@ -195,8 +221,8 @@ export interface AdminStats {
 
 export function useAdminStats() {
   return useSWR<AdminStats>('/api/proxy/admin/stats', fetcher, {
+    ...ADMIN_OPTS,
     refreshInterval: 30_000,
-    revalidateOnFocus: false,
   })
 }
 
@@ -228,8 +254,8 @@ export interface AdminRiskMetrics {
 
 export function useAdminRiskMetrics() {
   return useSWR<AdminRiskMetrics>('/api/proxy/admin/risk-metrics', fetcher, {
-    refreshInterval: 10_000,
-    revalidateOnFocus: false,
+    ...ADMIN_OPTS,
+    refreshInterval: 30_000,       // was 10s, admin metrics don't need real-time
   })
 }
 
@@ -245,7 +271,7 @@ export function useEquityHistory(accountId: string | undefined) {
   return useSWR<EquityPoint[]>(
     accountId ? `/api/proxy/engine/equity-history?account_id=${accountId}` : null,
     fetcher,
-    { revalidateOnFocus: false, dedupingInterval: 60_000 }
+    { revalidateOnFocus: false, dedupingInterval: 60_000, keepPreviousData: true }
   )
 }
 
@@ -264,7 +290,7 @@ export function useActivity(accountId: string | undefined) {
   return useSWR<ActivityItem[]>(
     accountId ? `/api/proxy/engine/activity?account_id=${accountId}` : null,
     fetcher,
-    { revalidateOnFocus: false, dedupingInterval: 30_000 }
+    { revalidateOnFocus: false, dedupingInterval: 30_000, keepPreviousData: true }
   )
 }
 
@@ -279,9 +305,7 @@ export function usePayouts(accountId: string | undefined) {
 }
 
 export function useAdminPayouts() {
-  return useSWR<Payout[]>('/api/proxy/admin/payouts', fetcher, {
-    revalidateOnFocus: false,
-  })
+  return useSWR<Payout[]>('/api/proxy/admin/payouts', fetcher, ADMIN_OPTS)
 }
 
 // ─── Affiliate ───────────────────────────────────────────────────────────────

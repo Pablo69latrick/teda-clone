@@ -142,6 +142,37 @@ const state = {
   initialized: false,
 }
 
+// ── O(1) lookup maps (rebuilt on mutations) ─────────────────────────────────
+const positionMap = new Map<string, MockPosition>()
+const orderMap = new Map<string, MockOrder>()
+
+function rebuildPositionMap() {
+  positionMap.clear()
+  for (const p of state.positions) positionMap.set(p.id, p)
+}
+function rebuildOrderMap() {
+  orderMap.clear()
+  for (const o of state.orders) orderMap.set(o.id, o)
+}
+
+// ── computeAccount cache (invalidated on state mutations) ───────────────────
+interface AccountSnapshot {
+  id: string; user_id: string; name: string
+  account_type: string; account_type_config: string; base_currency: string
+  default_margin_mode: string; starting_balance: number
+  available_margin: number; reserved_margin: number; total_margin_required: number
+  injected_funds: number; net_worth: number; total_pnl: number
+  unrealized_pnl: number; realized_pnl: number
+  is_active: boolean; is_closed: boolean; account_status: string
+  challenge_template_id: string; created_at: number; updated_at: number
+}
+
+let _accountCache: AccountSnapshot | null = null
+let _accountCacheVersion = 0
+let _stateVersion = 0
+
+function invalidateAccountCache() { _stateVersion++ }
+
 function initState() {
   if (state.initialized) return
   state.initialized = true
@@ -159,8 +190,11 @@ function initState() {
 
 // ─── Account computations ───────────────────────────────────────────────────
 
-function computeAccount() {
+function computeAccount(): AccountSnapshot {
   initState()
+
+  // Return cached result if state hasn't changed
+  if (_accountCache && _accountCacheVersion === _stateVersion) return _accountCache
 
   const totalMarginUsed = state.positions.reduce((s, p) => s + p.isolated_margin, 0)
 
@@ -176,7 +210,7 @@ function computeAccount() {
   const netWorth = STARTING_BALANCE + state.realizedPnl + unrealizedPnl - state.totalFeesPaid
   const availableMargin = netWorth - totalMarginUsed
 
-  return {
+  const result = {
     id: ACCOUNT_ID, user_id: 'mock-user-id', name: 'Phase 1 — Evaluation',
     account_type: 'prop', account_type_config: 'mock-template-id', base_currency: 'USD',
     default_margin_mode: 'cross', starting_balance: STARTING_BALANCE,
@@ -192,6 +226,10 @@ function computeAccount() {
     challenge_template_id: 'mock-template-id',
     created_at: Date.now() - 30 * 86400_000, updated_at: Date.now(),
   }
+
+  _accountCache = result
+  _accountCacheVersion = _stateVersion
+  return result
 }
 
 // ─── Liquidation price calculator ───────────────────────────────────────────
@@ -441,7 +479,9 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
       }
 
       state.positions.push(position)
+      positionMap.set(posId, position)
       state.totalFeesPaid += fee
+      invalidateAccountCache()
 
       const pDec = def.priceDec
       state.activity.push({
@@ -477,6 +517,7 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
       created_at: now, updated_at: now,
     }
     state.orders.push(order)
+    orderMap.set(orderId, order)
 
     state.activity.push({
       id: uid('act'), type: 'order',
@@ -500,10 +541,10 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const posId = String(body.position_id ?? '')
 
-    const idx = state.positions.findIndex(p => p.id === posId && p.status === 'open')
+    const pos = positionMap.get(posId)
+    if (!pos || pos.status !== 'open') return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
+    const idx = state.positions.indexOf(pos)
     if (idx === -1) return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
-
-    const pos = state.positions[idx]
     const now = Date.now()
     const def = INSTRUMENT_DEFS[pos.symbol]
     const exitPrice = pos.direction === 'long' ? getBidPrice(pos.symbol) : getAskPrice(pos.symbol)
@@ -525,11 +566,13 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
 
     // Move from open to closed
     state.positions.splice(idx, 1)
-    state.closedPositions.push(pos)
+    positionMap.delete(posId)
+    state.closedPositions.push({ ...pos })   // deep copy to avoid shared refs
 
     // Update account state
     state.realizedPnl += realizedPnl
     state.totalFeesPaid += closeFee
+    invalidateAccountCache()
 
     const pDec = def?.priceDec ?? 2
     const pnlStr = realizedPnl >= 0 ? `+$${realizedPnl.toFixed(2)}` : `-$${Math.abs(realizedPnl).toFixed(2)}`
@@ -552,8 +595,8 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
     const posId   = String(body.position_id ?? '')
     const closeQty = Number(body.quantity ?? 0)
 
-    const pos = state.positions.find(p => p.id === posId && p.status === 'open')
-    if (!pos) return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
+    const pos = positionMap.get(posId)
+    if (!pos || pos.status !== 'open') return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
     if (closeQty <= 0 || closeQty >= pos.quantity) {
       return NextResponse.json({ error: 'Invalid partial close quantity' }, { status: 400 })
     }
@@ -580,6 +623,7 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
     // Update account
     state.realizedPnl += partialPnl
     state.totalFeesPaid += closeFee
+    invalidateAccountCache()
 
     const pDec = def?.priceDec ?? 2
     const pnlStr = partialPnl >= 0 ? `+$${partialPnl.toFixed(2)}` : `-$${Math.abs(partialPnl).toFixed(2)}`
@@ -602,8 +646,9 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const orderId = String(body.order_id ?? '')
 
-    const order = state.orders.find(o => o.id === orderId && (o.status === 'pending' || o.status === 'partial'))
-    if (!order) return NextResponse.json({ error: 'Order not found or already cancelled' }, { status: 404 })
+    const order = orderMap.get(orderId)
+    if (!order || (order.status !== 'pending' && order.status !== 'partial'))
+      return NextResponse.json({ error: 'Order not found or already cancelled' }, { status: 404 })
 
     order.status = 'cancelled'
     order.updated_at = Date.now()

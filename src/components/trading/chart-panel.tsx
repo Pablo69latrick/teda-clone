@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import {
   createChart,
   ColorType,
@@ -46,9 +46,10 @@ export function ChartPanel({ symbol, accountId, onFullscreen, isFullscreen }: Ch
   const { data: candles } = useCandles(symbol, timeframe)
   const { data: tradingData } = useTradingData(accountId)
 
-  // Open positions for the current symbol
-  const openPositionsForSymbol = (tradingData?.positions ?? []).filter(
-    p => p.status === 'open' && p.symbol === symbol
+  // Open positions for the current symbol (memoised to avoid re-render churn)
+  const openPositionsForSymbol = useMemo(
+    () => (tradingData?.positions ?? []).filter(p => p.status === 'open' && p.symbol === symbol),
+    [tradingData?.positions, symbol]
   )
 
   // ── Create chart on mount ─────────────────────────────────────────────────
