@@ -315,6 +315,20 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
     })))
   }
 
+  // ── engine/affiliate — user-facing affiliate dashboard ────────────────────
+  if (apiPath === 'engine/affiliate') {
+    // Supabase mode would query affiliates + referrals tables
+    // For now, return null to fall through to mock
+    return null
+  }
+
+  // ── engine/competitions — competition list ──────────────────────────────
+  if (apiPath === 'engine/competitions') {
+    // Supabase mode would query competitions table
+    // For now, return null to fall through to mock
+    return null
+  }
+
   // ── leaderboard ─────────────────────────────────────────────────────────────
   if (apiPath === 'leaderboard') {
     const supabase = await createSupabaseServerClient()

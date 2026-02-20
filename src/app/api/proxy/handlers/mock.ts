@@ -163,6 +163,38 @@ function getMockData(path: string, req?: NextRequest): unknown {
       { id: 'p2', account_id: ACCOUNT_ID, user_id: 'mock-user-id', user_name: 'Jules Trader', user_email: 'trader@example.com', amount: 1800, status: 'approved', method: 'crypto', wallet_address: '0xaB3c...8dF1', tx_hash: null, admin_note: null, requested_at: Date.now() - 3 * 86400_000, processed_at: Date.now() - 1 * 86400_000, created_at: Date.now() - 3 * 86400_000, updated_at: Date.now() - 1 * 86400_000 },
       { id: 'p1', account_id: ACCOUNT_ID, user_id: 'mock-user-id', user_name: 'Jules Trader', user_email: 'trader@example.com', amount: 3200, status: 'paid', method: 'crypto', wallet_address: '0xaB3c...8dF1', tx_hash: '0xabc123def456', admin_note: null, requested_at: Date.now() - 14 * 86400_000, processed_at: Date.now() - 12 * 86400_000, created_at: Date.now() - 14 * 86400_000, updated_at: Date.now() - 12 * 86400_000 },
     ]
+    case 'engine/affiliate': return {
+      stats: {
+        affiliate_code: 'TEDA-JULES',
+        affiliate_link: 'https://app.teda.com/register?ref=TEDA-JULES',
+        commission_rate: 0.20,
+        total_referrals: 47,
+        active_referrals: 31,
+        total_earned: 8_240,
+        pending_commission: 1_380,
+        this_month: 1_640,
+      },
+      referrals: [
+        { id: 'r1', name: 'M. K.', joined: Date.now() - 5 * 86400_000, status: 'active', commission: 109.80, challenge: '50K Standard 2-Step' },
+        { id: 'r2', name: 'A. T.', joined: Date.now() - 8 * 86400_000, status: 'active', commission: 219.80, challenge: '100K Instant Funding' },
+        { id: 'r3', name: 'L. V.', joined: Date.now() - 12 * 86400_000, status: 'funded', commission: 109.80, challenge: '50K Standard 2-Step' },
+        { id: 'r4', name: 'R. D.', joined: Date.now() - 15 * 86400_000, status: 'breached', commission: 59.80, challenge: '50K Standard 2-Step' },
+        { id: 'r5', name: 'S. H.', joined: Date.now() - 20 * 86400_000, status: 'active', commission: 219.80, challenge: '100K Instant Funding' },
+      ],
+      monthly: [
+        { month: 'Aug', amount: 620 },
+        { month: 'Sep', amount: 840 },
+        { month: 'Oct', amount: 1_120 },
+        { month: 'Nov', amount: 960 },
+        { month: 'Dec', amount: 1_640 },
+      ],
+    }
+    case 'engine/competitions': return [
+      { id: 'c1', name: 'Monthly PnL Masters', description: 'Top 10 traders by profit percentage at month end win a share of the prize pool.', type: 'pnl', status: 'live', prize_pool: 50_000, entry_fee: 0, participants: 1_243, max_participants: null, starts_at: Date.now() - 12 * 86400_000, ends_at: Date.now() + 18 * 86400_000, prize_breakdown: [{ place: '1st', amount: 20_000 }, { place: '2nd', amount: 12_000 }, { place: '3rd', amount: 8_000 }, { place: '4th-10th', amount: 1_429 }], your_rank: 87, your_pct: 2.31, funded_only: false },
+      { id: 'c2', name: 'Weekend Warriors', description: 'Highest win rate over the weekend (Fri-Sun) among traders with 10+ trades.', type: 'winrate', status: 'upcoming', prize_pool: 10_000, entry_fee: 0, participants: 342, max_participants: 500, starts_at: Date.now() + 2 * 86400_000, ends_at: Date.now() + 4 * 86400_000, prize_breakdown: [{ place: '1st', amount: 5_000 }, { place: '2nd', amount: 3_000 }, { place: '3rd', amount: 2_000 }], your_rank: null, your_pct: null, funded_only: false },
+      { id: 'c3', name: 'Elite Volume Challenge', description: 'Invitation-only competition for funded traders. Compete on total notional volume.', type: 'volume', status: 'live', prize_pool: 100_000, entry_fee: 0, participants: 48, max_participants: 50, starts_at: Date.now() - 5 * 86400_000, ends_at: Date.now() + 25 * 86400_000, prize_breakdown: [{ place: '1st', amount: 50_000 }, { place: '2nd', amount: 30_000 }, { place: '3rd', amount: 20_000 }], your_rank: null, your_pct: null, funded_only: true },
+      { id: 'c4', name: 'Q4 Grand Prix', description: 'Quarterly tournament - best overall risk-adjusted performance wins.', type: 'pnl', status: 'ended', prize_pool: 75_000, entry_fee: 0, participants: 2_100, max_participants: null, starts_at: Date.now() - 92 * 86400_000, ends_at: Date.now() - 2 * 86400_000, prize_breakdown: [{ place: '1st', amount: 30_000 }, { place: '2nd', amount: 20_000 }, { place: '3rd', amount: 15_000 }, { place: '4th-20th', amount: 625 }], your_rank: 14, your_pct: 6.87, funded_only: false },
+    ]
     case 'misc/calendar': return []
     case 'admin/users': return Array.from({ length: 40 }, (_, i) => ({ id: `user-${i + 1}`, name: ['Alex Rivera','Jamie Chen','Sam Patel','Morgan Kim','Taylor Liu','Casey Wang','Riley Zhang','Drew Nguyen','Jordan Lee','Quinn Ma'][i % 10], email: `trader${i + 1}@example.com`, emailVerified: i % 5 !== 0, image: null, role: i === 0 ? 'admin' : 'user', banned: i % 12 === 0, banReason: i % 12 === 0 ? 'ToS violation' : null, banExpires: null, twoFactorEnabled: i % 3 === 0, createdAt: Date.now() - (40 - i) * 3 * 86400_000, updatedAt: Date.now() - i * 86400_000, lastSeen: Date.now() - Math.floor(Math.random() * 7 * 86400_000) }))
     case 'admin/accounts': return Array.from({ length: 55 }, (_, i) => ({ id: `acc-${i + 1}`, userId: `user-${(i % 40) + 1}`, userEmail: `trader${(i % 40) + 1}@example.com`, userName: ['Alex Rivera','Jamie Chen','Sam Patel','Morgan Kim','Taylor Liu'][i % 5], accountType: i % 7 === 0 ? 'demo' : 'prop', name: `Phase ${(i % 3) + 1} — Evaluation`, availableMargin: 200_000 - i * 1_000, reservedMargin: Math.random() * 10_000, totalMarginRequired: Math.random() * 8_000, injectedFunds: 0, baseCurrency: 'USD', defaultMarginMode: 'cross', isActive: i % 8 !== 0, isClosed: i % 8 === 0, accountStatus: ['active','active','active','funded','passed','breached'][i % 6], challengeTemplateId: `tmpl-${(i % 3) + 1}`, createdAt: Date.now() - (55 - i) * 2 * 86400_000, updatedAt: Date.now() - i * 3600_000 }))

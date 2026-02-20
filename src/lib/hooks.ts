@@ -21,6 +21,8 @@ import type {
   AdminAccount,
   ChallengeTemplate,
   Affiliate,
+  AffiliateDashboard,
+  Competition,
   Payout,
 } from '@/types'
 
@@ -279,5 +281,23 @@ export function usePayouts(accountId: string | undefined) {
 export function useAdminPayouts() {
   return useSWR<Payout[]>('/api/proxy/admin/payouts', fetcher, {
     revalidateOnFocus: false,
+  })
+}
+
+// ─── Affiliate ───────────────────────────────────────────────────────────────
+
+export function useAffiliateDashboard() {
+  return useSWR<AffiliateDashboard>('/api/proxy/engine/affiliate', fetcher, {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  })
+}
+
+// ─── Competitions ────────────────────────────────────────────────────────────
+
+export function useCompetitions() {
+  return useSWR<Competition[]>('/api/proxy/engine/competitions', fetcher, {
+    revalidateOnFocus: false,
+    dedupingInterval: 30_000,
   })
 }

@@ -323,6 +323,30 @@ export interface Payout {
 }
 
 // ─────────────────────────────────────────────
+// COMPETITIONS
+// ─────────────────────────────────────────────
+export type CompetitionStatus = 'live' | 'upcoming' | 'ended'
+export type CompetitionType = 'pnl' | 'winrate' | 'volume'
+
+export interface Competition {
+  id: string
+  name: string
+  description: string
+  type: CompetitionType
+  status: CompetitionStatus
+  prize_pool: number
+  entry_fee: number
+  participants: number
+  max_participants: number | null
+  starts_at: number
+  ends_at: number
+  prize_breakdown: { place: string; amount: number }[]
+  your_rank: number | null
+  your_pct: number | null
+  funded_only: boolean
+}
+
+// ─────────────────────────────────────────────
 // NOTIFICATIONS
 // ─────────────────────────────────────────────
 export type NotificationType = 'position' | 'order' | 'challenge' | 'payout' | 'system'
@@ -352,6 +376,38 @@ export interface Affiliate {
   affiliateCode: string
   status: AffiliateStatus
   statusReason: string | null
+}
+
+// User-facing affiliate dashboard data
+export interface AffiliateStats {
+  affiliate_code: string
+  affiliate_link: string
+  commission_rate: number
+  total_referrals: number
+  active_referrals: number
+  total_earned: number
+  pending_commission: number
+  this_month: number
+}
+
+export interface AffiliateReferral {
+  id: string
+  name: string
+  joined: number
+  status: 'active' | 'funded' | 'breached'
+  commission: number
+  challenge: string
+}
+
+export interface AffiliateMonthly {
+  month: string
+  amount: number
+}
+
+export interface AffiliateDashboard {
+  stats: AffiliateStats
+  referrals: AffiliateReferral[]
+  monthly: AffiliateMonthly[]
 }
 
 // ─────────────────────────────────────────────

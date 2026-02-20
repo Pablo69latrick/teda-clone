@@ -1,123 +1,20 @@
 'use client'
 
 import { useState } from 'react'
-import { Trophy, Clock, Users, DollarSign, Flame, Lock } from 'lucide-react'
+import { Trophy, Clock, Users, Flame, Lock, Loader2 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useCompetitions } from '@/lib/hooks'
+import type { Competition, CompetitionStatus } from '@/types'
 
-type CompStatus = 'live' | 'upcoming' | 'ended'
-type CompType = 'pnl' | 'winrate' | 'volume'
-
-interface Competition {
-  id: string
-  name: string
-  description: string
-  type: CompType
-  status: CompStatus
-  prize_pool: number
-  entry_fee: number
-  participants: number
-  max_participants: number | null
-  starts_at: number
-  ends_at: number
-  prize_breakdown: { place: string; amount: number }[]
-  your_rank: number | null
-  your_pct: number | null
-}
-
-const MOCK_COMPS: Competition[] = [
-  {
-    id: 'c1',
-    name: '🔥 Monthly PnL Masters',
-    description: 'Top 10 traders by profit percentage at month end win a share of the prize pool.',
-    type: 'pnl',
-    status: 'live',
-    prize_pool: 50_000,
-    entry_fee: 0,
-    participants: 1_243,
-    max_participants: null,
-    starts_at: Date.now() - 12 * 86400_000,
-    ends_at: Date.now() + 18 * 86400_000,
-    prize_breakdown: [
-      { place: '1st', amount: 20_000 },
-      { place: '2nd', amount: 12_000 },
-      { place: '3rd', amount: 8_000 },
-      { place: '4th–10th', amount: 1_429 },
-    ],
-    your_rank: 87,
-    your_pct: 2.31,
-  },
-  {
-    id: 'c2',
-    name: '⚡ Weekend Warriors',
-    description: 'Highest win rate over the weekend (Fri–Sun) among traders with 10+ trades.',
-    type: 'winrate',
-    status: 'upcoming',
-    prize_pool: 10_000,
-    entry_fee: 0,
-    participants: 342,
-    max_participants: 500,
-    starts_at: Date.now() + 2 * 86400_000,
-    ends_at: Date.now() + 4 * 86400_000,
-    prize_breakdown: [
-      { place: '1st', amount: 5_000 },
-      { place: '2nd', amount: 3_000 },
-      { place: '3rd', amount: 2_000 },
-    ],
-    your_rank: null,
-    your_pct: null,
-  },
-  {
-    id: 'c3',
-    name: '💎 Elite Volume Challenge',
-    description: 'Invitation-only competition for funded traders. Compete on total notional volume.',
-    type: 'volume',
-    status: 'live',
-    prize_pool: 100_000,
-    entry_fee: 0,
-    participants: 48,
-    max_participants: 50,
-    starts_at: Date.now() - 5 * 86400_000,
-    ends_at: Date.now() + 25 * 86400_000,
-    prize_breakdown: [
-      { place: '1st', amount: 50_000 },
-      { place: '2nd', amount: 30_000 },
-      { place: '3rd', amount: 20_000 },
-    ],
-    your_rank: null,
-    your_pct: null,
-  },
-  {
-    id: 'c4',
-    name: '🎯 Q4 Grand Prix',
-    description: 'Quarterly tournament — best overall risk-adjusted performance wins.',
-    type: 'pnl',
-    status: 'ended',
-    prize_pool: 75_000,
-    entry_fee: 0,
-    participants: 2_100,
-    max_participants: null,
-    starts_at: Date.now() - 92 * 86400_000,
-    ends_at: Date.now() - 2 * 86400_000,
-    prize_breakdown: [
-      { place: '1st', amount: 30_000 },
-      { place: '2nd', amount: 20_000 },
-      { place: '3rd', amount: 15_000 },
-      { place: '4th–20th', amount: 625 },
-    ],
-    your_rank: 14,
-    your_pct: 6.87,
-  },
-]
-
-const STATUS_CONFIG: Record<CompStatus, { label: string; cls: string }> = {
+const STATUS_CONFIG: Record<CompetitionStatus, { label: string; cls: string }> = {
   live: { label: 'Live', cls: 'bg-profit/10 text-profit border-profit/20' },
   upcoming: { label: 'Upcoming', cls: 'bg-chart-2/10 text-chart-2 border-chart-2/20' },
   ended: { label: 'Ended', cls: 'bg-muted text-muted-foreground border-border' },
 }
 
-const TYPE_LABELS: Record<CompType, string> = {
+const TYPE_LABELS: Record<string, string> = {
   pnl: 'PnL %',
   winrate: 'Win Rate',
   volume: 'Volume',
@@ -135,7 +32,7 @@ function timeRemaining(ms: number): string {
 
 function CompCard({ comp }: { comp: Competition }) {
   const cfg = STATUS_CONFIG[comp.status]
-  const isLocked = comp.id === 'c3' && comp.your_rank === null
+  const isLocked = comp.funded_only && comp.your_rank === null
   const isFull = comp.max_participants != null && comp.participants >= comp.max_participants
 
   return (
@@ -148,7 +45,7 @@ function CompCard({ comp }: { comp: Competition }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <Badge variant="secondary" className={cn('text-[9px] border', cfg.cls)}>{cfg.label}</Badge>
-            <Badge variant="secondary" className="text-[9px]">{TYPE_LABELS[comp.type]}</Badge>
+            <Badge variant="secondary" className="text-[9px]">{TYPE_LABELS[comp.type] ?? comp.type}</Badge>
             {isLocked && (
               <Badge variant="secondary" className="text-[9px] bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
                 <Lock className="size-2.5 mr-0.5" /> Funded Only
@@ -242,12 +139,20 @@ function CompCard({ comp }: { comp: Competition }) {
 }
 
 export default function CompetitionsPage() {
+  const { data: competitions, isLoading } = useCompetitions()
   const [filter, setFilter] = useState<'all' | 'live' | 'upcoming' | 'ended'>('all')
 
-  const filtered = MOCK_COMPS.filter(c => filter === 'all' || c.status === filter)
+  if (isLoading || !competitions) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
 
-  const liveCount = MOCK_COMPS.filter(c => c.status === 'live').length
-  const totalPrizes = MOCK_COMPS.filter(c => c.status !== 'ended').reduce((s, c) => s + c.prize_pool, 0)
+  const filtered = competitions.filter(c => filter === 'all' || c.status === filter)
+  const liveCount = competitions.filter(c => c.status === 'live').length
+  const totalPrizes = competitions.filter(c => c.status !== 'ended').reduce((s, c) => s + c.prize_pool, 0)
 
   return (
     <div className="flex flex-col gap-6">
@@ -288,9 +193,16 @@ export default function CompetitionsPage() {
       </div>
 
       {/* Competition cards */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        {filtered.map(comp => <CompCard key={comp.id} comp={comp} />)}
-      </div>
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <Trophy className="size-8 text-muted-foreground/50 mb-3" />
+          <p className="text-sm text-muted-foreground">No competitions match this filter.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {filtered.map(comp => <CompCard key={comp.id} comp={comp} />)}
+        </div>
+      )}
     </div>
   )
 }
