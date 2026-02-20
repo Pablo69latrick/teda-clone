@@ -46,10 +46,10 @@ const LandingFooter = () => {
       { label: "Contact",      href: "#" },
     ],
     Legal: [
-      { label: "User Agreement",  href: "#" },
-      { label: "Privacy Policy",  href: "#" },
-      { label: "Terms",           href: "#" },
-      { label: "Licenses",        href: "#" },
+      { label: "Terms of Service", href: "/terms" },
+      { label: "Privacy Policy",   href: "/privacy" },
+      { label: "Risk Disclosure",  href: "/terms#prohibited-activities" },
+      { label: "Contact",          href: "mailto:support@teda.com" },
     ],
   };
 

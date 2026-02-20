@@ -244,7 +244,10 @@ export default function RegisterPage() {
                     </div>
                   ))}
                   <div className="border-t border-border/50 pt-2 mt-1 text-[10px] text-muted-foreground">
-                    By continuing you agree to our Terms of Service and Risk Disclosure.
+                    By continuing you agree to our{' '}
+                    <Link href="/terms" className="text-primary hover:underline" target="_blank">Terms of Service</Link>
+                    {' '}and{' '}
+                    <Link href="/privacy" className="text-primary hover:underline" target="_blank">Privacy Policy</Link>.
                   </div>
                 </div>
               )

@@ -13,6 +13,7 @@ function LoginForm() {
   const { signIn, signInWithGoogle, submitting, error, clearError } = useAuth()
   const searchParams = useSearchParams()
   const justRegistered = searchParams.get('registered') === '1'
+  const justVerified = searchParams.get('verified') === '1'
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -71,7 +72,15 @@ function LoginForm() {
           {justRegistered && (
             <div className="flex items-start gap-2 bg-profit/10 border border-profit/30 rounded-lg px-3 py-2.5 mb-5 text-xs text-profit">
               <CheckCircle className="size-3.5 mt-0.5 shrink-0" />
-              Account created! Sign in to get started.
+              Account created! Check your email to verify, then sign in.
+            </div>
+          )}
+
+          {/* Success banner after email verification */}
+          {justVerified && (
+            <div className="flex items-start gap-2 bg-profit/10 border border-profit/30 rounded-lg px-3 py-2.5 mb-5 text-xs text-profit">
+              <CheckCircle className="size-3.5 mt-0.5 shrink-0" />
+              Email verified! Sign in to get started.
             </div>
           )}
 
