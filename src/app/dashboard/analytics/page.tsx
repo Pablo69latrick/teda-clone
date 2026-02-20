@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import {
   BarChart3, TrendingUp, Clock, Target,
   Percent, Award, Activity, Calendar,
-  Flame, CheckCircle, XCircle, Zap,
+  Flame, CheckCircle, XCircle, Zap, Share2,
 } from 'lucide-react'
+import { toPng } from 'html-to-image'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { useAccounts, useTradingData } from '@/lib/hooks'
@@ -64,6 +65,8 @@ function RadarChart({
 }: {
   scores: { consistency: number; rr: number; iq: number; winRate: number }
 }) {
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [sharing, setSharing] = useState(false)
   const cx = 120; const cy = 120; const r = 80
   const labels = ['Consistency', 'R/R', 'IQ', 'Win %']
   const values = [scores.consistency, scores.rr, scores.iq, scores.winRate]
@@ -82,8 +85,54 @@ function RadarChart({
   const axesPts = angles.map(a => toPoint(a, 1))
   const composite = Math.round(values.reduce((a, b) => a + b, 0) / values.length)
 
+  const handleShareToX = useCallback(async () => {
+    if (!cardRef.current || sharing) return
+    setSharing(true)
+    try {
+      // Hide the share button before capturing
+      const shareBtn = cardRef.current.querySelector('[data-share-btn]') as HTMLElement | null
+      if (shareBtn) shareBtn.style.display = 'none'
+
+      const dataUrl = await toPng(cardRef.current, {
+        pixelRatio: 2,
+        cacheBust: true,
+        backgroundColor: '#1e3a8a',
+      })
+
+      // Restore button
+      if (shareBtn) shareBtn.style.display = ''
+
+      // Convert to blob and download
+      const res = await fetch(dataUrl)
+      const blob = await res.blob()
+
+      // Try native share (mobile) with image
+      if (navigator.share && navigator.canShare?.({ files: [new File([blob], 'performance.png', { type: 'image/png' })] })) {
+        await navigator.share({
+          text: `📊 My VerticalProp Performance Score: ${composite}/100\n\n🎯 Consistency: ${scores.consistency} | R/R: ${scores.rr} | Win%: ${scores.winRate} | IQ: ${scores.iq}\n\n#VerticalProp #PropTrading #Trading`,
+          files: [new File([blob], 'performance.png', { type: 'image/png' })],
+        })
+      } else {
+        // Desktop fallback: download image + open X with pre-filled tweet
+        const link = document.createElement('a')
+        link.download = `verticalprop-performance-${composite}.png`
+        link.href = dataUrl
+        link.click()
+
+        const tweetText = encodeURIComponent(
+          `📊 My VerticalProp Performance Score: ${composite}/100\n\n🎯 Consistency: ${scores.consistency} | R/R: ${scores.rr} | Win%: ${scores.winRate} | IQ: ${scores.iq}\n\n#VerticalProp #PropTrading #Trading`
+        )
+        window.open(`https://x.com/intent/post?text=${tweetText}`, '_blank', 'width=550,height=420')
+      }
+    } catch (err) {
+      console.error('Share failed:', err)
+    } finally {
+      setSharing(false)
+    }
+  }, [composite, scores, sharing])
+
   return (
-    <div className="relative rounded-2xl overflow-hidden" style={{ background: 'linear-gradient(135deg, #1e3a8a, #1e40af, #1d4ed8)' }}>
+    <div ref={cardRef} className="relative rounded-2xl overflow-hidden" style={{ background: 'linear-gradient(135deg, #1e3a8a, #1e40af, #1d4ed8)' }}>
       <div className="p-6">
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
@@ -91,6 +140,10 @@ function RadarChart({
             <p className="text-blue-200 text-xs font-medium">Performance ⓘ</p>
             <p className="text-white text-4xl font-bold mt-1">{composite}</p>
             <p className="text-blue-200 text-xs mt-0.5">Composite</p>
+          </div>
+          {/* Watermark for shared image */}
+          <div className="flex items-center gap-1.5 opacity-60">
+            <span className="text-blue-200 text-[10px] font-medium tracking-wider">VERTICALPROP</span>
           </div>
         </div>
 
@@ -163,8 +216,23 @@ function RadarChart({
         </div>
 
         {/* Share button */}
-        <button className="mt-4 w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-white/10 hover:bg-white/20 transition-colors text-white text-xs font-medium">
-          <Activity className="size-3.5" />Share Performance
+        <button
+          data-share-btn
+          onClick={handleShareToX}
+          disabled={sharing}
+          className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 active:bg-white/25 transition-colors text-white text-xs font-medium disabled:opacity-50"
+        >
+          {sharing ? (
+            <>
+              <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Generating...
+            </>
+          ) : (
+            <>
+              <Share2 className="size-3.5" />
+              Share on 𝕏
+            </>
+          )}
         </button>
       </div>
     </div>
