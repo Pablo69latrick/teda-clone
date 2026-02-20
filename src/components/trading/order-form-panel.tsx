@@ -1,11 +1,21 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSWRConfig } from 'swr'
 import { ChevronDown, CheckCircle, XCircle, Shield } from 'lucide-react'
 import { cn, formatCurrency, calcRequiredMargin } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { useInstruments, useTradingData } from '@/lib/hooks'
+import { useInstruments, useTradingData, useChallengeStatus } from '@/lib/hooks'
+import { RiskCalculatorSection } from './risk-calculator-section'
+import {
+  calcFullRiskResult,
+  calcMaxAllowedRiskPercent,
+  calcLotSizeFromRisk,
+  calcSlFromRisk,
+  calcTpFromSlAndRR,
+  calcRiskPercentFromQtyAndSl,
+  type ChallengeConstraints,
+} from '@/lib/risk-calc'
 import type { PlaceOrderRequest } from '@/types'
 
 interface OrderFormPanelProps {
@@ -16,8 +26,10 @@ interface OrderFormPanelProps {
 type OrderMode = 'market' | 'pending'
 type OrderSide = 'long' | 'short'
 type PendingType = 'limit' | 'stop'
+type RiskMode = 'risk' | 'sl' | 'manual'
 
 export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
+  // ── Existing state ──────────────────────────────────────────────────────
   const [quantity, setQuantity] = useState('0.01')
   const [leverage, setLeverage] = useState(10)
   const [orderMode, setOrderMode] = useState<OrderMode>('market')
@@ -31,31 +43,186 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
   const [showLeverage, setShowLeverage] = useState(false)
 
+  // ── Risk Calculator state ───────────────────────────────────────────────
+  const [riskPercent, setRiskPercent] = useState('1')
+  const [rrRatio, setRrRatio] = useState('2')
+  const [showRiskCalc, setShowRiskCalc] = useState(false)
+  const [riskMode, setRiskMode] = useState<RiskMode>('risk')
+  const syncGuardRef = useRef(false) // prevents useEffect loop
+
+  // ── Hooks ───────────────────────────────────────────────────────────────
   const { mutate } = useSWRConfig()
   const { data: instruments } = useInstruments()
   const { data: tradingData } = useTradingData(accountId)
+  const { data: challengeStatus } = useChallengeStatus(accountId)
 
+  // ── Instrument data ─────────────────────────────────────────────────────
   const instrument = instruments?.find(i => i.symbol === symbol)
   const currentPrice = instrument?.current_price ?? instrument?.mark_price ?? 0
   const bidPrice = instrument?.current_bid ?? currentPrice
   const askPrice = instrument?.current_ask ?? currentPrice
   const maxLev = instrument?.max_leverage ?? 50
   const priceDecimals = instrument?.price_decimals ?? 5
+  const qtyDecimals = instrument?.qty_decimals ?? 2
+  const minOrderSize = instrument?.min_order_size ?? 0.01
 
+  // ── Account data ────────────────────────────────────────────────────────
   const account = tradingData?.account
   const availableMargin = account?.available_margin ?? 0
+  const equity = account?.net_worth ?? account?.injected_funds ?? 200_000
+  const startingBalance = account?.injected_funds ?? 200_000
 
   useEffect(() => {
     if (leverage > maxLev) setLeverage(maxLev)
   }, [maxLev, leverage])
 
+  // ── Base derived values ─────────────────────────────────────────────────
   const qty = parseFloat(quantity) || 0
   const requiredMargin = calcRequiredMargin(qty, currentPrice, leverage)
   const marginPct = availableMargin > 0 ? (requiredMargin / availableMargin) * 100 : 0
-
   const slPriceNum = parseFloat(slPrice) || 0
   const tpPriceNum = parseFloat(tpPrice) || 0
+  const entryPrice = orderMode === 'pending' && limitPrice
+    ? parseFloat(limitPrice) || currentPrice
+    : currentPrice
 
+  // ── Challenge constraints ───────────────────────────────────────────────
+  const challengeConstraints: ChallengeConstraints | null = useMemo(() => {
+    if (!challengeStatus) return null
+    return {
+      dailyLossLimit: challengeStatus.daily_loss_limit ?? 0.05,
+      maxDrawdown: challengeStatus.max_drawdown ?? 0.10,
+      currentDailyLoss: challengeStatus.current_daily_loss ?? 0,
+      currentDrawdown: challengeStatus.current_drawdown ?? 0,
+    }
+  }, [challengeStatus])
+
+  const maxAllowedRisk = calcMaxAllowedRiskPercent(challengeConstraints, startingBalance, equity)
+
+  const dailyLossRemaining = challengeConstraints
+    ? (challengeConstraints.dailyLossLimit - challengeConstraints.currentDailyLoss) * startingBalance
+    : Infinity
+  const drawdownRemaining = challengeConstraints
+    ? (challengeConstraints.maxDrawdown - challengeConstraints.currentDrawdown) * startingBalance
+    : Infinity
+
+  // ── Risk Calculator result (derived) ────────────────────────────────────
+  // Direction hint: use 'long' as default since we compute both sides at order time
+  const directionHint: 'long' | 'short' = 'long'
+
+  const riskResult = useMemo(() => {
+    if (!showRiskCalc || entryPrice <= 0) return null
+    const riskPct = parseFloat(riskPercent) || 0
+    const rr = parseFloat(rrRatio) || 2
+    if (riskPct <= 0) return null
+
+    return calcFullRiskResult(
+      equity, startingBalance, entryPrice, leverage, directionHint,
+      riskPct, rr, priceDecimals, qtyDecimals, minOrderSize, challengeConstraints
+    )
+  }, [showRiskCalc, entryPrice, riskPercent, rrRatio, equity, startingBalance,
+    leverage, directionHint, priceDecimals, qtyDecimals, minOrderSize, challengeConstraints])
+
+  // ── Bidirectional binding: sync derived fields ──────────────────────────
+  useEffect(() => {
+    if (!showRiskCalc || !riskResult || syncGuardRef.current) return
+    syncGuardRef.current = true
+
+    if (riskMode === 'risk') {
+      // Risk % changed → update SL, TP, quantity
+      setSlPrice(riskResult.slPrice.toFixed(priceDecimals))
+      setTpPrice(riskResult.tpPrice.toFixed(priceDecimals))
+      setQuantity(riskResult.quantity.toFixed(qtyDecimals))
+    }
+
+    // Reset guard in next microtask
+    Promise.resolve().then(() => { syncGuardRef.current = false })
+  }, [riskResult, riskMode, showRiskCalc, priceDecimals, qtyDecimals])
+
+  // When user edits SL manually with risk calc open → recalc qty + risk%
+  useEffect(() => {
+    if (!showRiskCalc || riskMode !== 'sl' || syncGuardRef.current) return
+    if (slPriceNum <= 0 || entryPrice <= 0) return
+    syncGuardRef.current = true
+
+    const riskPct = parseFloat(riskPercent) || 1
+    const rr = parseFloat(rrRatio) || 2
+
+    // Recalculate quantity from current risk% and manual SL
+    const newQty = calcLotSizeFromRisk(
+      equity, riskPct, entryPrice, slPriceNum, leverage, qtyDecimals, minOrderSize
+    )
+    setQuantity(newQty.toFixed(qtyDecimals))
+
+    // Recalculate TP from manual SL + R:R
+    const newTp = calcTpFromSlAndRR(entryPrice, slPriceNum, rr, directionHint, priceDecimals)
+    setTpPrice(newTp.toFixed(priceDecimals))
+
+    // Update implied risk %
+    const impliedRisk = calcRiskPercentFromQtyAndSl(equity, newQty, entryPrice, slPriceNum, leverage)
+    setRiskPercent(impliedRisk.toFixed(2))
+
+    Promise.resolve().then(() => { syncGuardRef.current = false })
+  }, [slPriceNum, riskMode, showRiskCalc]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When user edits quantity manually with risk calc open → recalc risk% + SL
+  useEffect(() => {
+    if (!showRiskCalc || riskMode !== 'manual' || syncGuardRef.current) return
+    if (qty <= 0 || entryPrice <= 0) return
+    syncGuardRef.current = true
+
+    const riskPct = parseFloat(riskPercent) || 1
+    const rr = parseFloat(rrRatio) || 2
+
+    // Recalculate SL from current risk% and manual quantity
+    const newSl = calcSlFromRisk(equity, riskPct, qty, entryPrice, leverage, directionHint, priceDecimals)
+    if (newSl > 0) {
+      setSlPrice(newSl.toFixed(priceDecimals))
+      const newTp = calcTpFromSlAndRR(entryPrice, newSl, rr, directionHint, priceDecimals)
+      setTpPrice(newTp.toFixed(priceDecimals))
+    }
+
+    // Update implied risk %
+    if (slPriceNum > 0) {
+      const impliedRisk = calcRiskPercentFromQtyAndSl(equity, qty, entryPrice, slPriceNum, leverage)
+      setRiskPercent(impliedRisk.toFixed(2))
+    }
+
+    Promise.resolve().then(() => { syncGuardRef.current = false })
+  }, [qty, riskMode, showRiskCalc]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Risk mode wrappers ──────────────────────────────────────────────────
+  const handleRiskPercentChange = (v: string) => {
+    setRiskPercent(v)
+    setRiskMode('risk')
+  }
+
+  const handleRrRatioChange = (v: string) => {
+    setRrRatio(v)
+    setRiskMode('risk')
+  }
+
+  const handleSlPriceChangeManual = (v: string) => {
+    setSlPrice(v)
+    if (showRiskCalc) setRiskMode('sl')
+  }
+
+  const handleQuantityChangeManual = (v: string) => {
+    setQuantity(v)
+    if (showRiskCalc) setRiskMode('manual')
+  }
+
+  const handleToggleRiskCalc = (expanded: boolean) => {
+    setShowRiskCalc(expanded)
+    if (expanded) {
+      // Auto-enable SL and TP when opening risk calculator
+      if (!showSl) setShowSl(true)
+      if (!showTp) setShowTp(true)
+      setRiskMode('risk')
+    }
+  }
+
+  // ── Existing helpers ────────────────────────────────────────────────────
   const calcSlTpPnl = (targetPrice: number, side: OrderSide) => {
     if (!targetPrice || !currentPrice || qty === 0) return { amount: 0, pct: 0 }
     const diff = side === 'long'
@@ -65,10 +232,12 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
     return { amount: diff, pct }
   }
 
-  const handleQuantityChange = (delta: number) => {
+  const handleQuantityDelta = (delta: number) => {
     const current = parseFloat(quantity) || 0
     const step = instrument?.min_order_size ?? 0.01
-    setQuantity(Math.max(step, current + delta * step).toFixed(instrument?.qty_decimals ?? 2))
+    const newQty = Math.max(step, current + delta * step).toFixed(instrument?.qty_decimals ?? 2)
+    setQuantity(newQty)
+    if (showRiskCalc) setRiskMode('manual')
   }
 
   const showToast = (type: 'success' | 'error', msg: string) => {
@@ -137,6 +306,7 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
 
   const isDisabled = qty === 0 || submitting || (orderMode === 'pending' && !limitPrice)
 
+  // ── JSX ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col bg-card">
       {/* Mode toggle: MARKET / PENDING */}
@@ -228,16 +398,20 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
           )}
         </div>
         <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-border/50">
-          <button onClick={() => handleQuantityChange(-1)}
+          <button onClick={() => handleQuantityDelta(-1)}
             className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors">−</button>
-          <input type="text" value={quantity} onChange={e => setQuantity(e.target.value)}
+          <input type="text" value={quantity} onChange={e => handleQuantityChangeManual(e.target.value)}
             className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums" />
-          <button onClick={() => handleQuantityChange(1)}
+          <button onClick={() => handleQuantityDelta(1)}
             className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm transition-colors">+</button>
         </div>
         <div className="flex items-center gap-1 mt-1.5">
           {[0.01, 0.05, 0.1, 0.5, 1].map(q => (
-            <button key={q} onClick={() => setQuantity(q.toFixed(instrument?.qty_decimals ?? 2))}
+            <button key={q} onClick={() => {
+              const v = q.toFixed(instrument?.qty_decimals ?? 2)
+              setQuantity(v)
+              if (showRiskCalc) setRiskMode('manual')
+            }}
               className={cn(
                 'flex-1 py-0.5 rounded text-[9px] font-medium transition-colors border',
                 parseFloat(quantity) === q
@@ -284,12 +458,12 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
             )}
           </div>
           <div className="flex items-center gap-1 bg-muted/30 rounded-md border border-loss/30">
-            <button onClick={() => { const v = parseFloat(slPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; setSlPrice((v - step).toFixed(priceDecimals)) }}
+            <button onClick={() => { const v = parseFloat(slPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; handleSlPriceChangeManual((v - step).toFixed(priceDecimals)) }}
               className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm">−</button>
-            <input type="text" value={slPrice} onChange={e => setSlPrice(e.target.value)}
+            <input type="text" value={slPrice} onChange={e => handleSlPriceChangeManual(e.target.value)}
               placeholder={currentPrice > 0 ? (currentPrice * 0.99).toFixed(priceDecimals) : '0.00'}
               className="flex-1 bg-transparent text-center text-sm font-medium text-foreground focus:outline-none py-1.5 tabular-nums" />
-            <button onClick={() => { const v = parseFloat(slPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; setSlPrice((v + step).toFixed(priceDecimals)) }}
+            <button onClick={() => { const v = parseFloat(slPrice) || currentPrice; const step = instrument?.tick_size ?? 0.01; handleSlPriceChangeManual((v + step).toFixed(priceDecimals)) }}
               className="px-2 py-1.5 text-muted-foreground hover:text-foreground text-sm">+</button>
           </div>
         </div>
@@ -318,6 +492,21 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
           </div>
         </div>
       )}
+
+      {/* ── RISK CALCULATOR (collapsible) ──────────────────────────────── */}
+      <RiskCalculatorSection
+        riskPercent={riskPercent}
+        setRiskPercent={handleRiskPercentChange}
+        rrRatio={rrRatio}
+        setRrRatio={handleRrRatioChange}
+        isExpanded={showRiskCalc}
+        setIsExpanded={handleToggleRiskCalc}
+        riskResult={riskResult}
+        maxAllowedRiskPercent={maxAllowedRisk}
+        dailyLossRemaining={dailyLossRemaining}
+        drawdownRemaining={drawdownRemaining}
+        startingBalance={startingBalance}
+      />
 
       {/* Leverage (collapsible) */}
       <div className="px-3 py-2 border-b border-border/50">
