@@ -109,15 +109,29 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
 
   // CSS margin-shift: slides the entire widget left so the sidebar
   // disappears off-screen while the chart expands to fill the space.
-  // Same sliding pattern as the right Watchlist/Orders panel.
+  // A top-bar patch fills the gap left in the toolbar so visually
+  // only the drawing-tools sidebar moves — the top bar stays intact.
   return (
-    <div className="w-full h-full overflow-hidden" style={{ minHeight: 300 }}>
+    <div className="w-full h-full overflow-hidden relative" style={{ minHeight: 300 }}>
       <div
         ref={containerRef}
         className="h-full transition-[margin-left,width] duration-300 ease-in-out"
         style={{
           marginLeft: showToolsSidebar ? 0 : -TV_SIDEBAR_WIDTH,
           width: showToolsSidebar ? '100%' : `calc(100% + ${TV_SIDEBAR_WIDTH}px)`,
+        }}
+      />
+
+      {/* Top-bar patch: fills the toolbar gap when shifted so the
+          top bar looks continuous. Uses TradingView's dark toolbar color
+          + bottom border to match seamlessly. */}
+      <div
+        className="absolute top-0 left-0 z-10 pointer-events-none transition-[width] duration-300 ease-in-out"
+        style={{
+          width: showToolsSidebar ? 0 : TV_SIDEBAR_WIDTH,
+          height: TV_TOP_BAR_HEIGHT,
+          backgroundColor: '#131722',
+          borderBottom: '1px solid #2a2e39',
         }}
       />
     </div>
