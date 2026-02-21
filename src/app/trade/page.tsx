@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronRight, Monitor, BarChart3, ShoppingCart, PenTool } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Monitor, BarChart3, ShoppingCart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
@@ -196,6 +196,23 @@ export default function TradePage() {
             {/* ── Chart + right panel — FLEX (chart resizes with panel) ──── */}
             <div className="flex-1 min-h-0 flex">
 
+              {/* Tools sidebar toggle (W) — left arrow strip */}
+              <button
+                onClick={() => setShowToolsSidebar(v => !v)}
+                className={cn(
+                  'shrink-0 w-5 h-full flex items-center justify-center',
+                  'bg-[#111] hover:bg-[#1a1a1a] border-r border-border/50',
+                  'text-[#555] hover:text-white',
+                  'transition-colors duration-200 cursor-pointer',
+                )}
+                title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
+              >
+                <ChevronLeft className={cn(
+                  'size-3 transition-transform duration-300',
+                  !showToolsSidebar && 'rotate-180',
+                )} />
+              </button>
+
               {/* CHART — fills remaining space, resizes when panel toggles */}
               <div className={cn(
                 'flex-1 min-w-0 relative',
@@ -211,22 +228,6 @@ export default function TradePage() {
                     isFullscreen={chartFullscreen}
                   />
                 </div>
-
-                {/* ── Tools sidebar toggle (W) — top-left, always visible ── */}
-                <button
-                  onClick={() => setShowToolsSidebar(v => !v)}
-                  className={cn(
-                    'absolute top-2 left-2 z-30',
-                    'p-1.5 rounded',
-                    'transition-all duration-200',
-                    showToolsSidebar
-                      ? 'text-primary bg-primary/10 hover:bg-primary/20'
-                      : 'text-[#787b86]/60 hover:text-[#787b86] hover:bg-[#2a2e39]/80',
-                  )}
-                  title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
-                >
-                  <PenTool className="size-3.5" />
-                </button>
               </div>
 
               {/* ─── RIGHT PANEL — flex item, chart resizes around it ────── */}
