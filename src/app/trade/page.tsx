@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Monitor } from 'lucide-react'
+import { ChevronRight, Monitor, BarChart3, ShoppingCart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
@@ -14,6 +14,8 @@ import { usePriceStream } from '@/lib/use-price-stream'
 // Fallback used only in mock / dev mode (no Supabase configured)
 const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 
+const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function TradePage() {
@@ -21,19 +23,19 @@ export default function TradePage() {
   const [chartFullscreen, setChartFullscreen] = useState(false)
   const [timeframe, setTimeframe] = useState('1h')
 
-  // ── Overlay snap-toggle panels ────────────────────────────────────────────
-  const [watchlistOpen, setWatchlistOpen] = useState(true)   // starts OPEN (left)
-  const [orderOpen, setOrderOpen] = useState(false)          // starts CLOSED (right)
+  // ── Right panel state ───────────────────────────────────────────────────────
+  const [panelOpen, setPanelOpen] = useState(true)                         // starts OPEN
+  const [activeTab, setActiveTab] = useState<'watchlist' | 'orders'>('watchlist')
 
   // ── Restore persisted preferences from localStorage ───────────────────────
   useEffect(() => {
     try {
       const sym = localStorage.getItem('vp-symbol')
       if (sym) setSelectedSymbol(sym)
-      const wl = localStorage.getItem('vp-watchlist')
-      if (wl !== null) setWatchlistOpen(wl === '1')
-      const od = localStorage.getItem('vp-order')
-      if (od !== null) setOrderOpen(od === '1')
+      const po = localStorage.getItem('vp-panel')
+      if (po !== null) setPanelOpen(po === '1')
+      const tab = localStorage.getItem('vp-tab')
+      if (tab === 'watchlist' || tab === 'orders') setActiveTab(tab)
       const tf = localStorage.getItem('vp-timeframe')
       if (tf) setTimeframe(tf)
     } catch { /* SSR / storage unavailable */ }
@@ -44,11 +46,11 @@ export default function TradePage() {
     try { localStorage.setItem('vp-symbol', selectedSymbol) } catch {}
   }, [selectedSymbol])
   useEffect(() => {
-    try { localStorage.setItem('vp-watchlist', watchlistOpen ? '1' : '0') } catch {}
-  }, [watchlistOpen])
+    try { localStorage.setItem('vp-panel', panelOpen ? '1' : '0') } catch {}
+  }, [panelOpen])
   useEffect(() => {
-    try { localStorage.setItem('vp-order', orderOpen ? '1' : '0') } catch {}
-  }, [orderOpen])
+    try { localStorage.setItem('vp-tab', activeTab) } catch {}
+  }, [activeTab])
   useEffect(() => {
     try { localStorage.setItem('vp-timeframe', timeframe) } catch {}
   }, [timeframe])
@@ -79,11 +81,13 @@ export default function TradePage() {
         break
       case 'a':
       case 'A':
-        setOrderOpen(v => !v)
+        setPanelOpen(v => !v)
         break
       case 'q':
       case 'Q':
-        setWatchlistOpen(v => !v)
+        // Switch tab (and open panel if closed)
+        setActiveTab(v => v === 'watchlist' ? 'orders' : 'watchlist')
+        setPanelOpen(true)
         break
       case 'Escape':
         setChartFullscreen(false)
@@ -134,7 +138,7 @@ export default function TradePage() {
         <div className="flex-1 overflow-hidden p-2 pt-1 pb-4">
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
-            {/* ── Chart + side overlays container ────────────────────────── */}
+            {/* ── Chart + right overlay container ──────────────────────────── */}
             <div className="flex-1 min-h-0 relative">
 
               {/* CHART — always 100% underneath */}
@@ -151,61 +155,21 @@ export default function TradePage() {
                 />
               </div>
 
-              {/* ─── WATCHLIST overlay (left) ─────────────────────────────── */}
-              <div
-                className={cn(
-                  'absolute top-0 left-0 h-full z-20',
-                  'bg-card border-r border-border',
-                  'transition-[width] duration-300 ease-in-out overflow-hidden',
-                )}
-                style={{ width: watchlistOpen ? '20%' : '0px' }}
-              >
-                <div className="h-full w-full min-w-[200px]">
-                  <WatchlistPanel
-                    selectedSymbol={selectedSymbol}
-                    onSelectSymbol={setSelectedSymbol}
-                  />
-                </div>
-              </div>
-
-              {/* Watchlist toggle button — left edge */}
-              <button
-                onClick={() => setWatchlistOpen(v => !v)}
-                className={cn(
-                  'absolute top-1/2 -translate-y-1/2 z-30',
-                  'w-5 h-10 flex items-center justify-center',
-                  'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-r-md',
-                  'text-[#888] hover:text-white',
-                  'transition-all duration-300 ease-in-out',
-                  'shadow-lg shadow-black/40 cursor-pointer',
-                )}
-                style={{
-                  left: watchlistOpen ? '20%' : '0px',
-                  transition: 'left 300ms ease-in-out, background-color 200ms, color 200ms',
-                }}
-                title={watchlistOpen ? 'Replier la watchlist (Q)' : 'Ouvrir la watchlist (Q)'}
-              >
-                <ChevronLeft className={cn(
-                  'size-3.5 transition-transform duration-300',
-                  !watchlistOpen && 'rotate-180',
-                )} />
-              </button>
-
-              {/* ─── ORDER FORM overlay (right) ──────────────────────────── */}
+              {/* ─── RIGHT PANEL overlay ────────────────────────────────────── */}
               <div
                 className={cn(
                   'absolute top-0 right-0 h-full z-20',
                   'bg-card border-l border-border',
                   'transition-[width] duration-300 ease-in-out overflow-hidden',
                 )}
-                style={{ width: orderOpen ? '280px' : '0px' }}
+                style={{ width: panelOpen ? '280px' : '0px' }}
               >
-                <div className="h-full w-[280px] overflow-y-auto custom-scrollbar flex flex-col">
-                  {/* ── Timeframe selector ─────────────────────────── */}
+                <div className="h-full w-[280px] flex flex-col">
+
+                  {/* ── Timeframe selector ─────────────────────────────────── */}
                   <div className="shrink-0 px-3 pt-3 pb-2 border-b border-border/50">
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Timeframe</div>
                     <div className="flex gap-1">
-                      {(['1m','5m','15m','1h','4h','1d'] as const).map(tf => (
+                      {TIMEFRAMES.map(tf => (
                         <button
                           key={tf}
                           onClick={() => setTimeframe(tf)}
@@ -222,19 +186,61 @@ export default function TradePage() {
                     </div>
                   </div>
 
-                  {/* ── Order form ──────────────────────────────────── */}
-                  <div className="flex-1 min-h-0">
-                    <OrderFormPanel
-                      symbol={selectedSymbol}
-                      accountId={accountId}
-                    />
+                  {/* ── Tab toggle: Watchlist / Orders ─────────────────────── */}
+                  <div className="shrink-0 flex border-b border-border/50">
+                    <button
+                      onClick={() => setActiveTab('watchlist')}
+                      className={cn(
+                        'flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors relative',
+                        activeTab === 'watchlist'
+                          ? 'text-foreground'
+                          : 'text-muted-foreground hover:text-foreground/70',
+                      )}
+                    >
+                      <BarChart3 className="size-3" />
+                      Watchlist
+                      {activeTab === 'watchlist' && (
+                        <div className="absolute bottom-0 left-2 right-2 h-[2px] bg-primary rounded-full" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('orders')}
+                      className={cn(
+                        'flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors relative',
+                        activeTab === 'orders'
+                          ? 'text-foreground'
+                          : 'text-muted-foreground hover:text-foreground/70',
+                      )}
+                    >
+                      <ShoppingCart className="size-3" />
+                      Orders
+                      {activeTab === 'orders' && (
+                        <div className="absolute bottom-0 left-2 right-2 h-[2px] bg-primary rounded-full" />
+                      )}
+                    </button>
                   </div>
+
+                  {/* ── Tab content ────────────────────────────────────────── */}
+                  <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                    {activeTab === 'watchlist' ? (
+                      <WatchlistPanel
+                        selectedSymbol={selectedSymbol}
+                        onSelectSymbol={setSelectedSymbol}
+                      />
+                    ) : (
+                      <OrderFormPanel
+                        symbol={selectedSymbol}
+                        accountId={accountId}
+                      />
+                    )}
+                  </div>
+
                 </div>
               </div>
 
-              {/* Order toggle button — right edge */}
+              {/* Panel toggle button — right edge */}
               <button
-                onClick={() => setOrderOpen(v => !v)}
+                onClick={() => setPanelOpen(v => !v)}
                 className={cn(
                   'absolute top-1/2 -translate-y-1/2 z-30',
                   'w-5 h-10 flex items-center justify-center',
@@ -244,14 +250,14 @@ export default function TradePage() {
                   'shadow-lg shadow-black/40 cursor-pointer',
                 )}
                 style={{
-                  right: orderOpen ? '280px' : '0px',
+                  right: panelOpen ? '280px' : '0px',
                   transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
                 }}
-                title={orderOpen ? 'Replier le trading (A)' : 'Ouvrir le trading (A)'}
+                title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
               >
                 <ChevronRight className={cn(
                   'size-3.5 transition-transform duration-300',
-                  !orderOpen && 'rotate-180',
+                  !panelOpen && 'rotate-180',
                 )} />
               </button>
 
