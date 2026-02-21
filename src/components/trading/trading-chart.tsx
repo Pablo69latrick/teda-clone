@@ -1,27 +1,40 @@
 'use client'
 
 /**
- * TradingChart — TradingView Advanced Chart widget embed.
+ * TradingChart — TradingView Advanced Charts widget (tv.js).
  *
- * Renders TradingView's full chart with native drawing-tools sidebar.
- * The widget is recreated only when symbol or timeframe changes.
+ * Uses `new TradingView.widget()` for a full-featured chart with:
+ *   - Native drawing-tools sidebar (real TradingView tools)
+ *   - Native header toolbar (timeframes, indicators, chart type)
+ *   - API for symbol/timeframe changes (no widget recreation)
+ *   - Local storage persistence for drawings and settings
  *
- * The drawing-tools sidebar is toggled via CSS margin-shift so it
- * slides off-screen to the left (same pattern as the right panel).
- * No widget reload needed — only a CSS transition runs.
+ * The widget is created ONCE on mount. Subsequent symbol/timeframe
+ * changes are applied via the TradingView API — zero reload.
+ *
+ * The native drawing-tools sidebar can be toggled via:
+ *   widget.chart().executeActionById("drawingToolbarAction")
  *
  * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
  */
 
 import { useEffect, useRef, memo } from 'react'
 
+// ─── Global type for the tv.js library ──────────────────────────────────────
+
+declare global {
+  interface Window {
+    TradingView: any
+  }
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface TradingChartProps {
   symbol: string
   timeframe?: string
-  /** Show/hide the left-side drawing tools sidebar (W key) */
-  showToolsSidebar?: boolean
+  /** Called once when the widget is ready, with the widget instance */
+  onWidgetReady?: (widget: any) => void
 }
 
 // ─── Symbol mapping ─────────────────────────────────────────────────────────
@@ -42,82 +55,125 @@ const TV_INTERVALS: Record<string, string> = {
   '1d':  'D',
 }
 
-// ─── Layout constant ────────────────────────────────────────────────────────
-/** Width of TradingView's native left-side drawing tools sidebar (px) */
-export const SIDEBAR_WIDTH = 53
-
 // ─── Component ──────────────────────────────────────────────────────────────
 
-function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: TradingChartProps) {
+function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const widgetRef    = useRef<any>(null)
+  const readyRef     = useRef(false)
 
-  // Widget is only recreated when symbol or timeframe changes — NOT showToolsSidebar
+  // Mutable refs so the init closure always reads the latest values
+  const onReadyRef   = useRef(onWidgetReady)
+  const symbolRef    = useRef(symbol)
+  const tfRef        = useRef(timeframe)
+
+  onReadyRef.current = onWidgetReady
+  symbolRef.current  = symbol
+  tfRef.current      = timeframe
+
+  // ── Create widget ONCE on mount ────────────────────────────────────────
   useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
+    let mounted = true
+    const SCRIPT_ID = 'tradingview-tv-js'
 
-    // Clean previous widget
-    container.innerHTML = ''
+    function init() {
+      if (!mounted || !containerRef.current || widgetRef.current) return
+      if (!window.TradingView?.widget) return
 
-    // Widget container structure (TradingView requires this)
-    const wrapper = document.createElement('div')
-    wrapper.className = 'tradingview-widget-container'
-    wrapper.style.width = '100%'
-    wrapper.style.height = '100%'
+      widgetRef.current = new window.TradingView.widget({
+        container: containerRef.current,
+        autosize: true,
+        symbol:   toTVSymbol(symbolRef.current),
+        interval: TV_INTERVALS[tfRef.current] ?? '60',
+        timezone: 'Etc/UTC',
+        theme:    'dark',
+        style:    '1',
+        locale:   'fr',
 
-    const inner = document.createElement('div')
-    inner.className = 'tradingview-widget-container__widget'
-    inner.style.width = '100%'
-    inner.style.height = '100%'
-    wrapper.appendChild(inner)
+        toolbar_bg: '#131722',
 
-    // Inject TradingView embed script with config
-    // Always create with sidebar visible — CSS margin-shift handles hide/show
-    const script = document.createElement('script')
-    script.type = 'text/javascript'
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
-    script.async = true
-    script.textContent = JSON.stringify({
-      autosize: true,
-      symbol: toTVSymbol(symbol),
-      interval: TV_INTERVALS[timeframe] ?? '60',
-      timezone: 'Etc/UTC',
-      theme: 'dark',
-      style: '1',
-      locale: 'fr',
-      backgroundColor: 'rgba(10, 10, 10, 1)',
-      gridColor: 'rgba(10, 10, 10, 0)',
-      hide_top_toolbar: true,
-      hide_legend: false,
-      hide_side_toolbar: false,
-      allow_symbol_change: false,
-      save_image: false,
-      calendar: false,
-      hide_volume: true,
-      support_host: 'https://www.tradingview.com',
-    })
-    wrapper.appendChild(script)
-    container.appendChild(wrapper)
+        // ✅ Native drawing toolbar — the real TradingView tools
+        hide_side_toolbar: false,
+
+        enable_publishing:  false,
+        allow_symbol_change: false,
+        save_image: false,
+
+        enabled_features: [
+          'use_localstorage_for_settings',
+          'save_chart_properties_to_local_storage',
+          'side_toolbar_in_fullscreen_mode',
+          'header_in_fullscreen_mode',
+        ],
+
+        disabled_features: [
+          'header_symbol_search',
+          'header_compare',
+          'display_market_status',
+          'popup_hints',
+          'create_volume_indicator_by_default',
+        ],
+
+        overrides: {
+          'paneProperties.background':               '#0a0a0a',
+          'paneProperties.backgroundType':           'solid',
+          'paneProperties.vertGridProperties.color': 'rgba(10,10,10,0)',
+          'paneProperties.horzGridProperties.color': 'rgba(10,10,10,0)',
+        },
+      })
+
+      widgetRef.current.onChartReady(() => {
+        if (!mounted) return
+        readyRef.current = true
+
+        // Sync with current props (they may have changed while widget loaded)
+        try { widgetRef.current.chart().setSymbol(toTVSymbol(symbolRef.current)) } catch {}
+        try { widgetRef.current.chart().setResolution(TV_INTERVALS[tfRef.current] ?? '60') } catch {}
+
+        onReadyRef.current?.(widgetRef.current)
+      })
+    }
+
+    // Load tv.js once, then initialise
+    const existing = document.getElementById(SCRIPT_ID)
+    if (!existing) {
+      const s  = document.createElement('script')
+      s.id     = SCRIPT_ID
+      s.src    = 'https://s3.tradingview.com/tv.js'
+      s.async  = true
+      s.onload = init
+      document.head.appendChild(s)
+    } else if (window.TradingView?.widget) {
+      init()
+    } else {
+      existing.addEventListener('load', init, { once: true })
+    }
 
     return () => {
-      container.innerHTML = ''
+      mounted = false
+      if (widgetRef.current) {
+        try { widgetRef.current.remove() } catch {}
+        widgetRef.current = null
+        readyRef.current  = false
+      }
     }
-  }, [symbol, timeframe])
+  }, [])
 
-  // CSS margin-shift: slides the entire widget left so the sidebar
-  // disappears off-screen while the chart expands to fill the space.
-  return (
-    <div className="w-full h-full overflow-hidden relative" style={{ minHeight: 300 }}>
-      <div
-        ref={containerRef}
-        className="h-full transition-[margin-left,width] duration-300 ease-in-out"
-        style={{
-          marginLeft: showToolsSidebar ? 0 : -SIDEBAR_WIDTH,
-          width: showToolsSidebar ? '100%' : `calc(100% + ${SIDEBAR_WIDTH}px)`,
-        }}
-      />
-    </div>
-  )
+  // ── Update symbol via API (no recreation) ──────────────────────────────
+  useEffect(() => {
+    if (readyRef.current && widgetRef.current) {
+      try { widgetRef.current.chart().setSymbol(toTVSymbol(symbol)) } catch {}
+    }
+  }, [symbol])
+
+  // ── Update timeframe via API (no recreation) ──────────────────────────
+  useEffect(() => {
+    if (readyRef.current && widgetRef.current) {
+      try { widgetRef.current.chart().setResolution(TV_INTERVALS[timeframe] ?? '60') } catch {}
+    }
+  }, [timeframe])
+
+  return <div ref={containerRef} className="w-full h-full" style={{ minHeight: 300 }} />
 }
 
 export default memo(TradingChart)

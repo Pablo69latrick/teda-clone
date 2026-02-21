@@ -8,12 +8,14 @@ import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
-import { SIDEBAR_WIDTH } from '@/components/trading/trading-chart'
 import { useAccounts } from '@/lib/hooks'
 import { usePriceStream } from '@/lib/use-price-stream'
 
 // Fallback used only in mock / dev mode (no Supabase configured)
 const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
+
+/** Approximate width of TradingView's native drawing-tools sidebar (px) */
+const TV_SIDEBAR_PX = 53
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -36,14 +38,19 @@ export default function TradePage() {
   const [chartFullscreen, setChartFullscreen] = useState(false)
   const [timeframe, setTimeframe] = useState<string>('1h')
 
-  // ── TradingView tools sidebar (left-side drawing tools) ──────────────────────
-  const [showToolsSidebar, setShowToolsSidebar] = useState(true)
+  // ── TradingView widget ref (for API calls: sidebar toggle, etc.) ──────────
+  const tvWidgetRef = useRef<any>(null)
 
-  // ── Right panel state ───────────────────────────────────────────────────────
+  // ── TradingView tools sidebar (left-side drawing tools) ───────────────────
+  const [showToolsSidebar, setShowToolsSidebar] = useState(true)
+  const showToolsSidebarRef = useRef(showToolsSidebar)
+  useEffect(() => { showToolsSidebarRef.current = showToolsSidebar }, [showToolsSidebar])
+
+  // ── Right panel state ─────────────────────────────────────────────────────
   const [panelOpen, setPanelOpen] = useState(true)
   const [activeTab, setActiveTab] = useState<'watchlist' | 'orders'>('watchlist')
 
-  // ── Timeframe keyboard buffer ───────────────────────────────────────────────
+  // ── Timeframe keyboard buffer ─────────────────────────────────────────────
   const [tfBuffer, setTfBuffer] = useState('')
   const tfTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -88,7 +95,22 @@ export default function TradePage() {
   // Connect SSE price stream
   usePriceStream(accountId)
 
-  // ── Macro key handler (shared between keydown + postMessage) ─────────────
+  // ── Widget ready handler — store ref + sync sidebar state ─────────────────
+  const handleWidgetReady = useCallback((widget: any) => {
+    tvWidgetRef.current = widget
+    // If the user had the sidebar hidden (from localStorage), toggle it now
+    if (!showToolsSidebarRef.current) {
+      try { widget.chart().executeActionById('drawingToolbarAction') } catch {}
+    }
+  }, [])
+
+  // ── Toggle TradingView sidebar via API ────────────────────────────────────
+  const toggleTVSidebar = useCallback(() => {
+    setShowToolsSidebar(v => !v)
+    try { tvWidgetRef.current?.chart().executeActionById('drawingToolbarAction') } catch {}
+  }, [])
+
+  // ── Macro key handler (shared between keydown + postMessage) ──────────────
   const handleMacroKey = useCallback((key: string) => {
     switch (key) {
       case 'f':
@@ -105,7 +127,7 @@ export default function TradePage() {
         break
       case 'w':
       case 'W':
-        setShowToolsSidebar(v => !v)
+        toggleTVSidebar()
         break
       case 'a':
       case 'A':
@@ -121,15 +143,15 @@ export default function TradePage() {
         setTfBuffer('')
         break
     }
-  }, [])
+  }, [toggleTVSidebar])
 
-  // ── Keyboard shortcuts (window-level) ────────────────────────────────────
+  // ── Keyboard shortcuts (window-level) ─────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
-      // ── Timeframe buffer input ──────────────────────────────────────────
+      // ── Timeframe buffer input ────────────────────────────────────────
       const isDigit   = /^[0-9]$/.test(e.key)
       const isTfChar  = /^[hdmHDM]$/.test(e.key)
 
@@ -153,7 +175,7 @@ export default function TradePage() {
         return
       }
 
-      // ── Regular macro keys (only when buffer is empty) ──────────────────
+      // ── Regular macro keys (only when buffer is empty) ────────────────
       if (!tfBuffer) {
         handleMacroKey(e.key)
       }
@@ -162,7 +184,7 @@ export default function TradePage() {
     return () => window.removeEventListener('keydown', handler)
   }, [handleMacroKey, tfBuffer])
 
-  // ── PostMessage from TradingView iframes ─────────────────────────────────
+  // ── PostMessage from TradingView iframes ──────────────────────────────────
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.data?.type === 'tv-keydown' && typeof e.data.key === 'string') {
@@ -206,8 +228,7 @@ export default function TradePage() {
                   <ChartPanel
                     symbol={selectedSymbol}
                     timeframe={timeframe}
-                    showToolsSidebar={showToolsSidebar}
-                    onTimeframeChange={setTimeframe}
+                    onWidgetReady={handleWidgetReady}
                     accountId={accountId}
                     onFullscreen={() => setChartFullscreen(v => !v)}
                     isFullscreen={chartFullscreen}
@@ -216,7 +237,7 @@ export default function TradePage() {
 
                 {/* Tools sidebar toggle (W) — at sidebar right edge */}
                 <button
-                  onClick={() => setShowToolsSidebar(v => !v)}
+                  onClick={toggleTVSidebar}
                   className={cn(
                     'absolute top-1/2 -translate-y-1/2 z-30',
                     'w-5 h-10 flex items-center justify-center',
@@ -225,7 +246,7 @@ export default function TradePage() {
                     'transition-all duration-300 ease-in-out',
                     'shadow-lg shadow-black/40 cursor-pointer',
                   )}
-                  style={{ left: showToolsSidebar ? SIDEBAR_WIDTH : 0 }}
+                  style={{ left: showToolsSidebar ? TV_SIDEBAR_PX : 0 }}
                   title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
                 >
                   <ChevronLeft className={cn(
