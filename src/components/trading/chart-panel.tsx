@@ -5,6 +5,8 @@
  *
  * The timeframe can also be controlled from the right panel (trade/page.tsx)
  * or keyboard shortcuts. Changing it recreates the widget with the new interval.
+ *
+ * The left-side drawing tools sidebar is controlled via showToolsSidebar (W key).
  */
 
 import dynamic from 'next/dynamic'
@@ -32,6 +34,7 @@ const TradingChart = dynamic(
 interface ChartPanelProps {
   symbol: string
   timeframe: string
+  showToolsSidebar: boolean
   accountId?: string
   onFullscreen?: () => void
   isFullscreen?: boolean
@@ -42,13 +45,18 @@ interface ChartPanelProps {
 export function ChartPanel({
   symbol,
   timeframe,
+  showToolsSidebar,
   onFullscreen,
   isFullscreen,
 }: ChartPanelProps) {
   return (
     <div className="relative h-full w-full bg-[#0a0a0a] overflow-hidden">
       {/* TradingView chart — fills entire container, includes toolbar */}
-      <TradingChart symbol={symbol} timeframe={timeframe} />
+      <TradingChart
+        symbol={symbol}
+        timeframe={timeframe}
+        showToolsSidebar={showToolsSidebar}
+      />
 
       {/* Fullscreen overlay button — top-right corner, hover-reveal */}
       {onFullscreen && (

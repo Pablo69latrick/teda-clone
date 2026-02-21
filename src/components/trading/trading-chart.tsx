@@ -6,7 +6,7 @@
  * Renders TradingView's full chart with toolbar (drawing tools,
  * indicators, timeframe selector, crosshair, etc.).
  *
- * The widget is recreated when symbol or timeframe changes.
+ * The widget is recreated when symbol, timeframe, or showToolsSidebar changes.
  * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
  */
 
@@ -17,6 +17,8 @@ import { useEffect, useRef, memo } from 'react'
 interface TradingChartProps {
   symbol: string
   timeframe?: string
+  /** Show/hide the left-side drawing tools sidebar (W key) */
+  showToolsSidebar?: boolean
 }
 
 // ─── Symbol mapping ─────────────────────────────────────────────────────────
@@ -40,7 +42,7 @@ const TV_INTERVALS: Record<string, string> = {
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-function TradingChart({ symbol, timeframe = '1h' }: TradingChartProps) {
+function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -79,7 +81,7 @@ function TradingChart({ symbol, timeframe = '1h' }: TradingChartProps) {
       gridColor: 'rgba(26, 26, 46, 0.6)',
       hide_top_toolbar: false,
       hide_legend: false,
-      hide_side_toolbar: false,
+      hide_side_toolbar: !showToolsSidebar,
       allow_symbol_change: false,
       save_image: false,
       calendar: false,
@@ -92,7 +94,7 @@ function TradingChart({ symbol, timeframe = '1h' }: TradingChartProps) {
     return () => {
       container.innerHTML = ''
     }
-  }, [symbol, timeframe])
+  }, [symbol, timeframe, showToolsSidebar])
 
   return (
     <div

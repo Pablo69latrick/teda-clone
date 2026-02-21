@@ -37,6 +37,9 @@ export default function TradePage() {
   const [chartFullscreen, setChartFullscreen] = useState(false)
   const [timeframe, setTimeframe] = useState<string>('1h')
 
+  // ── TradingView tools sidebar (left-side drawing tools) ──────────────────────
+  const [showToolsSidebar, setShowToolsSidebar] = useState(true)
+
   // ── Right panel state ───────────────────────────────────────────────────────
   const [panelOpen, setPanelOpen] = useState(true)
   const [activeTab, setActiveTab] = useState<'watchlist' | 'orders'>('watchlist')
@@ -56,6 +59,8 @@ export default function TradePage() {
       if (tab === 'watchlist' || tab === 'orders') setActiveTab(tab)
       const tf = localStorage.getItem('vp-timeframe')
       if (tf) setTimeframe(tf)
+      const ts = localStorage.getItem('vp-tools-sidebar')
+      if (ts !== null) setShowToolsSidebar(ts === '1')
     } catch { /* SSR / storage unavailable */ }
   }, [])
 
@@ -72,6 +77,9 @@ export default function TradePage() {
   useEffect(() => {
     try { localStorage.setItem('vp-timeframe', timeframe) } catch {}
   }, [timeframe])
+  useEffect(() => {
+    try { localStorage.setItem('vp-tools-sidebar', showToolsSidebar ? '1' : '0') } catch {}
+  }, [showToolsSidebar])
 
   // Use the first active account from the session.
   const { data: accounts } = useAccounts()
@@ -98,6 +106,10 @@ export default function TradePage() {
         break
       case 'w':
       case 'W':
+        setShowToolsSidebar(v => !v)
+        break
+      case 'a':
+      case 'A':
         setPanelOpen(v => !v)
         break
       case 'q':
@@ -196,6 +208,7 @@ export default function TradePage() {
                 <ChartPanel
                   symbol={selectedSymbol}
                   timeframe={timeframe}
+                  showToolsSidebar={showToolsSidebar}
                   accountId={accountId}
                   onFullscreen={() => setChartFullscreen(v => !v)}
                   isFullscreen={chartFullscreen}
@@ -300,7 +313,7 @@ export default function TradePage() {
                   right: panelOpen ? '280px' : '0px',
                   transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
                 }}
-                title={panelOpen ? 'Replier le panneau (W)' : 'Ouvrir le panneau (W)'}
+                title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
               >
                 <ChevronRight className={cn(
                   'size-3.5 transition-transform duration-300',
