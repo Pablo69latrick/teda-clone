@@ -16,6 +16,15 @@
 
 import { isServerSupabaseConfigured } from '@/lib/supabase/config'
 import { getBinancePrices, FALLBACK_SYMBOLS } from '@/lib/binance-prices'
+import Decimal from 'decimal.js'
+
+/** Convert any DB value to Decimal safely. */
+function D(v: unknown): Decimal {
+  if (v === null || v === undefined) return new Decimal(0)
+  return new Decimal(String(v))
+}
+
+const FEE_RATE = new Decimal('0.0007')
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -153,13 +162,22 @@ async function runSupabaseMatchingEngine(prices: Record<string, number>) {
 
       if (!triggered) continue
 
-      // Close the position
-      const exitPrice = currentPrice
-      const priceDiff = pos.direction === 'long'
-        ? exitPrice - Number(pos.entry_price)
-        : Number(pos.entry_price) - exitPrice
-      const realizedPnl = priceDiff * Number(pos.quantity) * Number(pos.leverage)
-      const closeFee = exitPrice * Number(pos.quantity) * 0.0007
+      // Close the position — DECIMAL.JS for all financial math
+      const exitPriceD = new Decimal(currentPrice)
+      const entryPriceD = D(pos.entry_price)
+      const quantityD = D(pos.quantity)
+      const leverageD = D(pos.leverage)
+
+      const priceDiffD = pos.direction === 'long'
+        ? exitPriceD.minus(entryPriceD)
+        : entryPriceD.minus(exitPriceD)
+      const realizedPnlD = priceDiffD.times(quantityD).times(leverageD)
+      const closeFeeD = exitPriceD.times(quantityD).times(FEE_RATE)
+
+      // Convert back to number for DB writes
+      const exitPrice = exitPriceD.toNumber()
+      const realizedPnl = realizedPnlD.toNumber()
+      const closeFee = closeFeeD.toNumber()
 
       // Update position
       await admin.from('positions').update({
@@ -168,7 +186,7 @@ async function runSupabaseMatchingEngine(prices: Record<string, number>) {
         exit_price: exitPrice,
         exit_timestamp: now,
         realized_pnl: realizedPnl,
-        total_fees: Number(pos.trade_fees) + closeFee,
+        total_fees: D(pos.trade_fees).plus(closeFeeD).toNumber(),
         updated_at: new Date().toISOString(),
       }).eq('id', pos.id)
 
@@ -192,18 +210,19 @@ async function runSupabaseMatchingEngine(prices: Record<string, number>) {
         .single()
 
       if (acct) {
-        const newAvailableMargin = Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee
-        const newTotalMarginReq  = Math.max(0, Number(acct.total_margin_required) - Number(pos.isolated_margin))
-        const newRealizedPnl     = Number(acct.realized_pnl) + realizedPnl
-        const newTotalPnl        = Number(acct.total_pnl) + realizedPnl
-        const newNetWorth        = Number(acct.net_worth) + realizedPnl - closeFee
+        const isolatedMarginD = D(pos.isolated_margin)
+        const newAvailableMargin = D(acct.available_margin).plus(isolatedMarginD).plus(realizedPnlD).minus(closeFeeD)
+        const newTotalMarginReq  = Decimal.max(0, D(acct.total_margin_required).minus(isolatedMarginD))
+        const newRealizedPnl     = D(acct.realized_pnl).plus(realizedPnlD)
+        const newTotalPnl        = D(acct.total_pnl).plus(realizedPnlD)
+        const newNetWorth        = D(acct.net_worth).plus(realizedPnlD).minus(closeFeeD)
 
         await admin.from('accounts').update({
-          available_margin:      newAvailableMargin,
-          total_margin_required: newTotalMarginReq,
-          realized_pnl:          newRealizedPnl,
-          total_pnl:             newTotalPnl,
-          net_worth:             newNetWorth,
+          available_margin:      newAvailableMargin.toNumber(),
+          total_margin_required: newTotalMarginReq.toNumber(),
+          realized_pnl:          newRealizedPnl.toNumber(),
+          total_pnl:             newTotalPnl.toNumber(),
+          net_worth:             newNetWorth.toNumber(),
           updated_at:            new Date().toISOString(),
         }).eq('id', pos.account_id)
       }

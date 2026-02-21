@@ -15,6 +15,7 @@
 import { useEffect, useRef } from 'react'
 import { useSWRConfig } from 'swr'
 import { setPrices } from '@/lib/price-store'
+import { setPricesFromStream } from '@/stores/price-store'
 import type { TradingData, Instrument } from '@/types'
 
 export function usePriceStream(accountId: string | undefined) {
@@ -35,8 +36,10 @@ export function usePriceStream(accountId: string | undefined) {
         try {
           const { prices } = JSON.parse(event.data) as { prices: Record<string, number> }
 
-          // ── Channel 1: Price store (instant, no dependencies) ──────────
+          // ── Channel 1a: Legacy price store (useSyncExternalStore) ──────
           setPrices(prices)
+          // ── Channel 1b: Zustand price store (per-symbol selectors) ──────
+          setPricesFromStream(prices)
 
           // ── Channel 2: SWR instruments cache (watchlist spread, etc.) ──
           mutate(

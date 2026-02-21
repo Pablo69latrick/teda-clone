@@ -135,7 +135,7 @@ export default function TradePage() {
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
             {/* ── Chart + right panel (flex — chart resizes with panel) ──── */}
-            <div className="flex-1 min-h-0 flex">
+            <div className="flex-1 min-h-0 flex relative">
 
               {/* CHART — flex-1, resizes when right panel opens/closes */}
               <div className={cn(
@@ -152,29 +152,34 @@ export default function TradePage() {
                 />
               </div>
 
-              {/* ═══ RIGHT PANEL — toggle arrow + Watchlist + Order form ═══ */}
-              <div className="relative shrink-0 flex transition-[width] duration-300 ease-in-out"
+              {/* ═══ TOGGLE ARROW — floats at boundary, never clipped ═══ */}
+              <button
+                onClick={() => setRightPanelOpen(v => !v)}
+                className={cn(
+                  'absolute top-1/2 -translate-y-1/2 z-40',
+                  'w-6 h-14 flex items-center justify-center',
+                  'bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
+                  'text-[#888] hover:text-white',
+                  'transition-all duration-300 ease-in-out',
+                  'shadow-lg shadow-black/40',
+                  'cursor-pointer',
+                )}
+                style={{
+                  right: rightPanelOpen ? '20%' : '0px',
+                  transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
+                }}
+                title={rightPanelOpen ? 'Replier le panel (A)' : 'Ouvrir le panel (A)'}
+              >
+                <ChevronRight className={cn(
+                  'size-4 transition-transform duration-300',
+                  !rightPanelOpen && 'rotate-180',
+                )} />
+              </button>
+
+              {/* ═══ RIGHT PANEL — Watchlist + Order form ═══ */}
+              <div className="shrink-0 flex transition-[width] duration-300 ease-in-out overflow-hidden"
                 style={{ width: rightPanelOpen ? '20%' : '0px' }}
               >
-                {/* Toggle arrow — always visible on the left edge */}
-                <button
-                  onClick={() => setRightPanelOpen(v => !v)}
-                  className={cn(
-                    'absolute top-1/2 -translate-y-1/2 -left-5 z-30',
-                    'w-5 h-10 flex items-center justify-center',
-                    'bg-card/90 hover:bg-card border border-border/60 rounded-l-md',
-                    'text-muted-foreground hover:text-foreground',
-                    'transition-colors duration-200',
-                    'shadow-md',
-                  )}
-                  title={rightPanelOpen ? 'Replier le panel (A)' : 'Ouvrir le panel (A)'}
-                >
-                  <ChevronRight className={cn(
-                    'size-3.5 transition-transform duration-300',
-                    !rightPanelOpen && 'rotate-180',
-                  )} />
-                </button>
-
                 {/* Panel content */}
                 <div className={cn(
                   'flex flex-col h-full w-full min-w-[220px] overflow-hidden',

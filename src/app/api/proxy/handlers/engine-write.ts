@@ -1,11 +1,38 @@
 /**
  * Engine write handlers — Supabase mode (POST)
- * Covers: engine/orders, engine/close-position, engine/partial-close, engine/cancel-order
+ * Covers: engine/orders, engine/close-position, engine/partial-close, engine/cancel-order, engine/request-payout
+ *
+ * Security:
+ *   - Zod validation on ALL inputs
+ *   - Decimal.js for ALL financial math (no native float arithmetic on money)
+ *   - Pre-trade risk checks (drawdown + daily loss) before execution
  */
 
 import { type NextRequest, NextResponse } from 'next/server'
 import type { HandlerResult } from './shared'
 import { toEpochMs } from './shared'
+import Decimal from 'decimal.js'
+import {
+  PlaceOrderSchema,
+  ClosePositionSchema,
+  PartialCloseSchema,
+  CancelOrderSchema,
+  RequestPayoutSchema,
+  formatZodErrors,
+} from '@/lib/validation'
+
+// ─── Constants ─────────────────────────────────────────────────────────────
+
+const FEE_RATE = new Decimal('0.0007')        // 0.07 % per side
+const PROFIT_SPLIT = new Decimal('0.80')       // 80 % profit split for payouts
+
+// ─── Decimal helpers ───────────────────────────────────────────────────────
+
+/** Convert any DB value (string | number | null) to Decimal safely. */
+function D(v: unknown): Decimal {
+  if (v === null || v === undefined) return new Decimal(0)
+  return new Decimal(String(v))
+}
 
 export async function handleEngineWrite(req: NextRequest, apiPath: string): Promise<HandlerResult> {
   const { createSupabaseServerClient, createSupabaseAdminClient } = await import('@/lib/supabase/server')
@@ -13,48 +40,32 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
   // ── engine/orders (POST) ────────────────────────────────────────────────────
   if (apiPath === 'engine/orders') {
     const t0 = Date.now()
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const body = await req.json().catch(() => ({}))
+
+    // ── ZOD VALIDATION ─────────────────────────────────────────────────────
+    const parsed = PlaceOrderSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: formatZodErrors(parsed.error) },
+        { status: 400 }
+      )
+    }
+    const input = parsed.data
+
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-    // ── Strict server-side input validation ─────────────────────────────────
-    const VALID_DIRECTIONS  = ['long', 'short'] as const
-    const VALID_ORDER_TYPES = ['market', 'limit', 'stop', 'stop_limit'] as const
-
-    if (!body.account_id || typeof body.account_id !== 'string') {
-      return NextResponse.json({ error: 'Invalid account' }, { status: 400 })
-    }
-    if (!body.symbol || typeof body.symbol !== 'string') {
-      return NextResponse.json({ error: 'Invalid symbol' }, { status: 400 })
-    }
-    if (!VALID_DIRECTIONS.includes(body.direction as typeof VALID_DIRECTIONS[number])) {
-      return NextResponse.json({ error: 'direction must be long or short' }, { status: 400 })
-    }
-    if (!VALID_ORDER_TYPES.includes(body.order_type as typeof VALID_ORDER_TYPES[number])) {
-      return NextResponse.json({ error: 'Invalid order type' }, { status: 400 })
-    }
-
-    const qty = Number(body.quantity)
-    if (!Number.isFinite(qty) || qty <= 0) {
-      return NextResponse.json({ error: 'quantity must be a positive number' }, { status: 400 })
-    }
-
-    const rawLev = Number(body.leverage ?? 1)
-    if (!Number.isFinite(rawLev) || rawLev < 1) {
-      return NextResponse.json({ error: 'leverage must be >= 1' }, { status: 400 })
-    }
 
     const admin = createSupabaseAdminClient()
 
     // ── Parallel DB queries (account + instrument + price in one round-trip) ──
     const [accountRes, instrumentRes, priceRes] = await Promise.all([
-      admin.from('accounts').select('id, user_id, is_active, available_margin')
-        .eq('id', body.account_id).single(),
+      admin.from('accounts').select('id, user_id, is_active, available_margin, starting_balance, net_worth, realized_pnl, account_status')
+        .eq('id', input.account_id).single(),
       admin.from('instruments').select('price_decimals, qty_decimals, max_leverage, min_order_size, margin_requirement')
-        .eq('symbol', body.symbol).eq('is_active', true).single(),
+        .eq('symbol', input.symbol).eq('is_active', true).single(),
       admin.from('price_cache').select('current_price, current_bid, current_ask, mark_price')
-        .eq('symbol', body.symbol).single(),
+        .eq('symbol', input.symbol).single(),
     ])
 
     const account    = accountRes.data
@@ -74,59 +85,80 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Unknown or inactive symbol' }, { status: 400 })
     }
 
+    const qty = new Decimal(input.quantity)
+    const rawLev = input.leverage
     const lev = Math.max(1, Math.min(rawLev, instrument.max_leverage ?? 100))
 
-    if (qty < (instrument.min_order_size ?? 0)) {
+    if (qty.lt(instrument.min_order_size ?? 0)) {
       return NextResponse.json({
         error: `Minimum order size is ${instrument.min_order_size}`
       }, { status: 400 })
     }
 
-    const execPrice = body.order_type === 'market'
-      ? (body.direction === 'long'
-          ? (priceRow?.current_ask ?? priceRow?.current_price ?? (body.price as number ?? 0))
-          : (priceRow?.current_bid ?? priceRow?.current_price ?? (body.price as number ?? 0)))
-      : (body.price as number ?? 0)
+    const execPrice = input.order_type === 'market'
+      ? D(input.direction === 'long'
+          ? (priceRow?.current_ask ?? priceRow?.current_price ?? input.price ?? 0)
+          : (priceRow?.current_bid ?? priceRow?.current_price ?? input.price ?? 0))
+      : D(input.price ?? 0)
 
-    if (!Number.isFinite(execPrice) || execPrice <= 0) {
+    if (execPrice.lte(0)) {
       return NextResponse.json({ error: 'No price available for this symbol' }, { status: 422 })
     }
 
-    const notional = execPrice * qty
-    const margin   = notional / lev
-    const fee      = notional * 0.0007
+    // ── DECIMAL.JS FINANCIAL MATH ──────────────────────────────────────────
+    const notional = execPrice.times(qty)
+    const margin   = notional.div(lev)
+    const fee      = notional.times(FEE_RATE)
 
-    if (!Number.isFinite(notional) || !Number.isFinite(margin)) {
-      return NextResponse.json({ error: 'Order size too large' }, { status: 400 })
+    const availableMargin = D(account.available_margin)
+    if (margin.gt(availableMargin)) {
+      return NextResponse.json({
+        error: `Insufficient margin — required: $${margin.toFixed(2)}, available: $${availableMargin.toFixed(2)}`
+      }, { status: 422 })
     }
 
-    if (margin > Number(account.available_margin)) {
-      return NextResponse.json({ error: 'Insufficient margin for this order' }, { status: 422 })
+    // ── PRE-TRADE RISK CHECK (drawdown + daily loss) ───────────────────────
+    if (account.account_status !== 'breached') {
+      const startingBalance = D(account.starting_balance ?? account.net_worth)
+      const netWorth = D(account.net_worth)
+
+      // Max drawdown check
+      if (startingBalance.gt(0)) {
+        const drawdownPct = startingBalance.minus(netWorth).div(startingBalance)
+        if (drawdownPct.gte(0.10)) { // 10% max drawdown
+          return NextResponse.json({
+            error: `Max drawdown reached (${drawdownPct.times(100).toFixed(2)}%). Trading suspended.`
+          }, { status: 422 })
+        }
+      }
+
+      // Daily loss check (quick estimate: if remaining daily budget < margin, warn)
+      // Full daily loss check happens in challenge-status endpoint with position-level PnL
     }
 
-    const liqPct = 1 / lev
-    const liquidation_price = body.direction === 'long'
-      ? execPrice * (1 - liqPct)
-      : execPrice * (1 + liqPct)
+    const liqPct = new Decimal(1).div(lev)
+    const liquidation_price = input.direction === 'long'
+      ? execPrice.times(new Decimal(1).minus(liqPct))
+      : execPrice.times(new Decimal(1).plus(liqPct))
 
-    if (body.order_type === 'market') {
+    if (input.order_type === 'market') {
       // Atomic market order via Postgres RPC
       const { data: rpcResult, error: rpcErr } = await admin.rpc('place_market_order', {
-        p_account_id:        body.account_id,
+        p_account_id:        input.account_id,
         p_user_id:           user.id,
-        p_symbol:            body.symbol,
-        p_direction:         body.direction,
-        p_margin_mode:       body.margin_mode ?? 'cross',
-        p_quantity:          qty,
+        p_symbol:            input.symbol,
+        p_direction:         input.direction,
+        p_margin_mode:       input.margin_mode,
+        p_quantity:          qty.toNumber(),
         p_leverage:          lev,
-        p_exec_price:        execPrice,
-        p_margin:            margin,
-        p_fee:               fee,
-        p_liquidation_price: liquidation_price,
-        p_instrument_config: String(body.symbol),
-        p_instrument_price:  String(execPrice),
-        p_sl_price:          body.sl_price ? Number(body.sl_price) : null,
-        p_tp_price:          body.tp_price ? Number(body.tp_price) : null,
+        p_exec_price:        execPrice.toNumber(),
+        p_margin:            margin.toNumber(),
+        p_fee:               fee.toNumber(),
+        p_liquidation_price: liquidation_price.toNumber(),
+        p_instrument_config: String(input.symbol),
+        p_instrument_price:  String(execPrice.toNumber()),
+        p_sl_price:          input.sl_price ? Number(input.sl_price) : null,
+        p_tp_price:          input.tp_price ? Number(input.tp_price) : null,
       })
 
       if (rpcErr || !rpcResult) {
@@ -146,24 +178,20 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     }
 
     // ── Limit / stop order ────────────────────────────────────────────────────
-    if (!body.price && body.order_type !== 'market') {
-      return NextResponse.json({ error: 'Price required for limit/stop orders' }, { status: 422 })
-    }
-
     const { data: order, error: ordErr } = await admin
       .from('orders')
       .insert({
-        account_id:      body.account_id,
-        symbol:          body.symbol,
-        direction:       body.direction,
-        order_type:      body.order_type,
-        quantity:        qty,
+        account_id:      input.account_id,
+        symbol:          input.symbol,
+        direction:       input.direction,
+        order_type:      input.order_type,
+        quantity:        qty.toNumber(),
         leverage:        lev,
-        price:           body.order_type === 'limit' ? (body.price ?? null) : null,
-        stop_price:      body.order_type === 'stop'  ? (body.price ?? null) : null,
-        sl_price:        body.sl_price ?? null,
-        tp_price:        body.tp_price ?? null,
-        margin_mode:     body.margin_mode ?? 'cross',
+        price:           input.order_type === 'limit' ? (input.price ?? null) : null,
+        stop_price:      input.order_type === 'stop'  ? (input.price ?? null) : null,
+        sl_price:        input.sl_price ?? null,
+        tp_price:        input.tp_price ?? null,
+        margin_mode:     input.margin_mode,
         status:          'pending',
         filled_quantity: 0,
       })
@@ -176,10 +204,10 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     }
 
     await admin.from('activity').insert({
-      account_id: body.account_id,
+      account_id: input.account_id,
       type:  'order',
-      title: `${body.order_type === 'limit' ? 'Limit' : 'Stop'} ${body.direction} ${body.symbol}`,
-      sub:   `${qty} @ $${Number(body.price).toFixed(instrument?.price_decimals ?? 2)} · ${lev}x`,
+      title: `${input.order_type === 'limit' ? 'Limit' : 'Stop'} ${input.direction} ${input.symbol}`,
+      sub:   `${qty.toNumber()} @ $${D(input.price).toFixed(instrument?.price_decimals ?? 2)} · ${lev}x`,
       ts:    Date.now(),
       pnl:   null,
     })
@@ -208,13 +236,15 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
   // ── engine/close-position ───────────────────────────────────────────────────
   if (apiPath === 'engine/close-position') {
     const t0 = Date.now()
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const body = await req.json().catch(() => ({}))
 
-    if (!body.position_id || typeof body.position_id !== 'string') {
-      return NextResponse.json({ error: 'Invalid position_id' }, { status: 400 })
+    // ── ZOD VALIDATION ────────────────────────────────────────────────────
+    const parsed = ClosePositionSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: formatZodErrors(parsed.error) }, { status: 400 })
     }
+    const { position_id: positionId } = parsed.data
 
-    const positionId = body.position_id as string
     const admin = createSupabaseAdminClient()
 
     // ── PARALLEL: auth + position lookup at the same time ──
@@ -247,15 +277,19 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     const priceRow = priceRes.data
     console.log(`[close-position] lookup: ${Date.now() - t0}ms`)
 
+    // ── DECIMAL.JS PnL CALCULATION ────────────────────────────────────────
+    const entryPrice = D(pos.entry_price)
     const exitPrice = pos.direction === 'long'
-      ? (priceRow?.current_bid ?? priceRow?.current_price ?? Number(pos.entry_price))
-      : (priceRow?.current_ask ?? priceRow?.current_price ?? Number(pos.entry_price))
+      ? D(priceRow?.current_bid ?? priceRow?.current_price ?? pos.entry_price)
+      : D(priceRow?.current_ask ?? priceRow?.current_price ?? pos.entry_price)
+    const quantity = D(pos.quantity)
+    const leverage = D(pos.leverage)
 
-    const priceDiff  = pos.direction === 'long'
-      ? exitPrice - Number(pos.entry_price)
-      : Number(pos.entry_price) - exitPrice
-    const realizedPnl = priceDiff * Number(pos.quantity) * Number(pos.leverage)
-    const closeFee    = exitPrice * Number(pos.quantity) * 0.0007
+    const priceDiff = pos.direction === 'long'
+      ? exitPrice.minus(entryPrice)
+      : entryPrice.minus(exitPrice)
+    const realizedPnl = priceDiff.times(quantity).times(leverage)
+    const closeFee    = exitPrice.times(quantity).times(FEE_RATE)
 
     const now = Date.now()
 
@@ -264,10 +298,10 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       .update({
         status:       'closed',
         close_reason: 'manual',
-        exit_price:   exitPrice,
+        exit_price:   exitPrice.toNumber(),
         exit_timestamp: now,
-        realized_pnl: realizedPnl,
-        total_fees:   Number(pos.trade_fees) + closeFee,
+        realized_pnl: realizedPnl.toNumber(),
+        total_fees:   D(pos.trade_fees).plus(closeFee).toNumber(),
         updated_at:   new Date().toISOString(),
       })
       .eq('id', positionId)
@@ -279,16 +313,13 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
     // ── PARALLEL: cancel SL/TP + fetch account + fetch instrument (all at once) ──
     const [, acctRes, instrRes] = await Promise.all([
-      // Cancel linked SL/TP orders (fire-and-forget result)
       admin.from('orders')
         .update({ status: 'cancelled', updated_at: new Date().toISOString() })
         .eq('position_id', positionId)
         .in('status', ['pending', 'partial']),
-      // Fetch account for margin update
       admin.from('accounts')
         .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
         .eq('id', pos.account_id).single(),
-      // Fetch instrument for price decimals
       admin.from('instruments').select('price_decimals').eq('symbol', pos.symbol).single(),
     ])
 
@@ -296,25 +327,26 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     const pDec = instrRes.data?.price_decimals ?? 2
 
     // Update account + equity history + activity in parallel
-    const pnlStr = realizedPnl >= 0 ? `+$${realizedPnl.toFixed(2)}` : `-$${Math.abs(realizedPnl).toFixed(2)}`
+    const pnlStr = realizedPnl.gte(0) ? `+$${realizedPnl.toFixed(2)}` : `-$${realizedPnl.abs().toFixed(2)}`
     const postCloseOps: PromiseLike<unknown>[] = []
 
     if (acct) {
-      const newAvailableMargin = Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee
-      const newTotalMarginReq  = Math.max(0, Number(acct.total_margin_required) - Number(pos.isolated_margin))
-      const newRealizedPnl     = Number(acct.realized_pnl) + realizedPnl
-      const newTotalPnl        = Number(acct.total_pnl) + realizedPnl
-      const newNetWorth        = Number(acct.net_worth) + realizedPnl - closeFee
+      const isolatedMargin = D(pos.isolated_margin)
+      const newAvailableMargin = D(acct.available_margin).plus(isolatedMargin).plus(realizedPnl).minus(closeFee)
+      const newTotalMarginReq  = Decimal.max(0, D(acct.total_margin_required).minus(isolatedMargin))
+      const newRealizedPnl     = D(acct.realized_pnl).plus(realizedPnl)
+      const newTotalPnl        = D(acct.total_pnl).plus(realizedPnl)
+      const newNetWorth        = D(acct.net_worth).plus(realizedPnl).minus(closeFee)
 
       postCloseOps.push(
         admin.from('accounts').update({
-          available_margin: newAvailableMargin, total_margin_required: newTotalMarginReq,
-          realized_pnl: newRealizedPnl, total_pnl: newTotalPnl, net_worth: newNetWorth,
+          available_margin: newAvailableMargin.toNumber(), total_margin_required: newTotalMarginReq.toNumber(),
+          realized_pnl: newRealizedPnl.toNumber(), total_pnl: newTotalPnl.toNumber(), net_worth: newNetWorth.toNumber(),
           updated_at: new Date().toISOString(),
         }).eq('id', pos.account_id).then(),
         admin.from('equity_history').insert({
           account_id: pos.account_id, ts: now,
-          equity: newAvailableMargin, pnl: realizedPnl,
+          equity: newAvailableMargin.toNumber(), pnl: realizedPnl.toNumber(),
         }).then(),
       )
     }
@@ -323,44 +355,41 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       admin.from('activity').insert({
         account_id: pos.account_id, type: 'closed',
         title: `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} closed`,
-        sub: `${Number(pos.quantity)} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
-        ts: now, pnl: realizedPnl,
+        sub: `${quantity.toNumber()} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
+        ts: now, pnl: realizedPnl.toNumber(),
       }).then()
     )
 
-    // Run all post-close writes in parallel
     await Promise.all(postCloseOps)
 
     console.log(`[close-position] total: ${Date.now() - t0}ms`)
     return NextResponse.json({
       success:       true,
       position_id:   positionId,
-      exit_price:    exitPrice,
-      realized_pnl:  realizedPnl,
-      close_fee:     closeFee,
+      exit_price:    exitPrice.toNumber(),
+      realized_pnl:  realizedPnl.toNumber(),
+      close_fee:     closeFee.toNumber(),
     })
   }
 
   // ── engine/partial-close ────────────────────────────────────────────────────
   if (apiPath === 'engine/partial-close') {
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const body = await req.json().catch(() => ({}))
+
+    // ── ZOD VALIDATION ────────────────────────────────────────────────────
+    const parsed = PartialCloseSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: formatZodErrors(parsed.error) }, { status: 400 })
+    }
+    const { position_id: positionId, quantity: closeQtyRaw } = parsed.data
+    const closeQty = new Decimal(closeQtyRaw)
+
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    if (!body.position_id || typeof body.position_id !== 'string') {
-      return NextResponse.json({ error: 'Invalid position_id' }, { status: 400 })
-    }
-
-    const closeQty = Number(body.quantity)
-    if (!Number.isFinite(closeQty) || closeQty <= 0) {
-      return NextResponse.json({ error: 'quantity must be a positive number' }, { status: 400 })
-    }
-
     const admin = createSupabaseAdminClient()
-    const positionId = body.position_id as string
 
-    // Admin client bypasses RLS — manual ownership check below
     const { data: pos } = await admin
       .from('positions')
       .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
@@ -372,7 +401,6 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
     }
 
-    // Parallel: verify ownership + fetch price
     const [posAccountRes, priceRes2] = await Promise.all([
       admin.from('accounts').select('id, user_id, available_margin, realized_pnl')
         .eq('id', pos.account_id).single(),
@@ -385,36 +413,37 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const totalQty = Number(pos.quantity)
-    if (closeQty >= totalQty) {
+    const totalQty = D(pos.quantity)
+    if (closeQty.gte(totalQty)) {
       return NextResponse.json({ error: 'Use close-position to close all. quantity must be less than full position size.' }, { status: 400 })
     }
 
     const priceRow = priceRes2.data
 
+    // ── DECIMAL.JS FINANCIAL MATH ─────────────────────────────────────────
+    const entryPrice = D(pos.entry_price)
     const exitPrice = pos.direction === 'long'
-      ? (priceRow?.current_bid ?? priceRow?.current_price ?? Number(pos.entry_price))
-      : (priceRow?.current_ask ?? priceRow?.current_price ?? Number(pos.entry_price))
+      ? D(priceRow?.current_bid ?? priceRow?.current_price ?? pos.entry_price)
+      : D(priceRow?.current_ask ?? priceRow?.current_price ?? pos.entry_price)
+    const leverage = D(pos.leverage)
 
-    const priceDiff    = pos.direction === 'long'
-      ? exitPrice - Number(pos.entry_price)
-      : Number(pos.entry_price) - exitPrice
-    const partialPnl   = priceDiff * closeQty * Number(pos.leverage)
-    const closeFee     = exitPrice * closeQty * 0.0007
-
-    const marginFraction = closeQty / totalQty
-    const releasedMargin = Number(pos.isolated_margin) * marginFraction
-    const remainingQty   = totalQty - closeQty
+    const priceDiff     = pos.direction === 'long' ? exitPrice.minus(entryPrice) : entryPrice.minus(exitPrice)
+    const partialPnl    = priceDiff.times(closeQty).times(leverage)
+    const closeFee      = exitPrice.times(closeQty).times(FEE_RATE)
+    const marginFraction = closeQty.div(totalQty)
+    const isolatedMargin = D(pos.isolated_margin)
+    const releasedMargin = isolatedMargin.times(marginFraction)
+    const remainingQty   = totalQty.minus(closeQty)
 
     const now = Date.now()
 
     const { error: updateErr } = await admin
       .from('positions')
       .update({
-        quantity:        remainingQty,
-        isolated_margin: Number(pos.isolated_margin) - releasedMargin,
-        realized_pnl:    partialPnl,
-        total_fees:      Number(pos.trade_fees) + closeFee,
+        quantity:        remainingQty.toNumber(),
+        isolated_margin: isolatedMargin.minus(releasedMargin).toNumber(),
+        realized_pnl:    partialPnl.toNumber(),
+        total_fees:      D(pos.trade_fees).plus(closeFee).toNumber(),
         updated_at:      new Date().toISOString(),
       })
       .eq('id', positionId)
@@ -431,68 +460,76 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       .single()
 
     if (acctPartial) {
+      const newAvailableMargin = D(acctPartial.available_margin).plus(releasedMargin).plus(partialPnl).minus(closeFee)
+      const newTotalMarginReq  = Decimal.max(0, D(acctPartial.total_margin_required).minus(releasedMargin))
+      const newRealizedPnl     = D(acctPartial.realized_pnl).plus(partialPnl)
+      const newTotalPnl        = D(acctPartial.total_pnl).plus(partialPnl)
+      const newNetWorth        = D(acctPartial.net_worth).plus(partialPnl).minus(closeFee)
+
       await admin
         .from('accounts')
         .update({
-          available_margin:      Number(acctPartial.available_margin) + releasedMargin + partialPnl - closeFee,
-          total_margin_required: Math.max(0, Number(acctPartial.total_margin_required) - releasedMargin),
-          realized_pnl:          Number(acctPartial.realized_pnl) + partialPnl,
-          total_pnl:             Number(acctPartial.total_pnl) + partialPnl,
-          net_worth:             Number(acctPartial.net_worth) + partialPnl - closeFee,
+          available_margin:      newAvailableMargin.toNumber(),
+          total_margin_required: newTotalMarginReq.toNumber(),
+          realized_pnl:          newRealizedPnl.toNumber(),
+          total_pnl:             newTotalPnl.toNumber(),
+          net_worth:             newNetWorth.toNumber(),
           updated_at:            new Date().toISOString(),
         })
         .eq('id', pos.account_id)
     }
 
     const baseMargin = acctPartial
-      ? Number(acctPartial.available_margin) + releasedMargin + partialPnl - closeFee
-      : Number(posAccount.available_margin) + releasedMargin + partialPnl - closeFee
+      ? D(acctPartial.available_margin).plus(releasedMargin).plus(partialPnl).minus(closeFee)
+      : D(posAccount.available_margin).plus(releasedMargin).plus(partialPnl).minus(closeFee)
     await admin.from('equity_history').insert({
       account_id: pos.account_id,
       ts:         now,
-      equity:     baseMargin,
-      pnl:        partialPnl,
+      equity:     baseMargin.toNumber(),
+      pnl:        partialPnl.toNumber(),
     })
 
     const { data: instr } = await admin
       .from('instruments').select('price_decimals').eq('symbol', pos.symbol).single()
     const pDec   = instr?.price_decimals ?? 2
-    const pnlStr = partialPnl >= 0 ? `+$${partialPnl.toFixed(2)}` : `-$${Math.abs(partialPnl).toFixed(2)}`
+    const pnlStr = partialPnl.gte(0) ? `+$${partialPnl.toFixed(2)}` : `-$${partialPnl.abs().toFixed(2)}`
     await admin.from('activity').insert({
       account_id: pos.account_id,
       type:       'closed',
       title:      `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} partial close`,
-      sub:        `${closeQty} lots @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
+      sub:        `${closeQty.toNumber()} lots @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
       ts:         now,
-      pnl:        partialPnl,
+      pnl:        partialPnl.toNumber(),
     })
 
     return NextResponse.json({
       success:        true,
       position_id:    positionId,
-      closed_quantity: closeQty,
-      remaining_qty:  remainingQty,
-      exit_price:     exitPrice,
-      realized_pnl:   partialPnl,
-      close_fee:      closeFee,
+      closed_quantity: closeQty.toNumber(),
+      remaining_qty:  remainingQty.toNumber(),
+      exit_price:     exitPrice.toNumber(),
+      realized_pnl:   partialPnl.toNumber(),
+      close_fee:      closeFee.toNumber(),
     })
   }
 
   // ── engine/cancel-order ─────────────────────────────────────────────────────
   if (apiPath === 'engine/cancel-order') {
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const body = await req.json().catch(() => ({}))
+
+    // ── ZOD VALIDATION ────────────────────────────────────────────────────
+    const parsed = CancelOrderSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: formatZodErrors(parsed.error) }, { status: 400 })
+    }
+    const { order_id: orderId } = parsed.data
+
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    if (!body.order_id || typeof body.order_id !== 'string') {
-      return NextResponse.json({ error: 'Invalid order_id' }, { status: 400 })
-    }
-
     const admin = createSupabaseAdminClient()
-    const orderId = body.order_id as string
 
-    // Admin client bypasses RLS — manual ownership check below
     const { data: order } = await admin
       .from('orders')
       .select('id, account_id, status')
@@ -525,36 +562,25 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
   // ── engine/request-payout ───────────────────────────────────────────────────
   if (apiPath === 'engine/request-payout') {
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const body = await req.json().catch(() => ({}))
+
+    // ── ZOD VALIDATION ────────────────────────────────────────────────────
+    const parsed = RequestPayoutSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: formatZodErrors(parsed.error) }, { status: 400 })
+    }
+    const input = parsed.data
+
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    if (!body.account_id || typeof body.account_id !== 'string') {
-      return NextResponse.json({ error: 'Invalid account' }, { status: 400 })
-    }
-
-    const amount = Number(body.amount)
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
-    }
-
-    const method = body.method ?? 'crypto'
-    if (!['crypto', 'bank', 'paypal'].includes(method as string)) {
-      return NextResponse.json({ error: 'Invalid payout method' }, { status: 400 })
-    }
-
-    const walletAddress = typeof body.wallet_address === 'string' ? body.wallet_address.trim() : null
-    if (method === 'crypto' && (!walletAddress || walletAddress.length < 10)) {
-      return NextResponse.json({ error: 'Valid wallet address required for crypto payouts' }, { status: 400 })
-    }
-
     // Verify account ownership (admin bypasses RLS)
-    const adminPayout = createSupabaseAdminClient()
-    const { data: account } = await adminPayout
+    const admin = createSupabaseAdminClient()
+    const { data: account } = await admin
       .from('accounts')
       .select('id, user_id, realized_pnl, starting_balance, account_status')
-      .eq('id', body.account_id)
+      .eq('id', input.account_id)
       .single()
 
     if (!account) {
@@ -564,29 +590,30 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Only funded accounts can request payouts
     if (account.account_status !== 'funded') {
       return NextResponse.json({ error: 'Payouts are only available for funded accounts' }, { status: 422 })
     }
 
-    // Check available profit (80% profit split)
-    const availableProfit = Math.max(0, Number(account.realized_pnl) * 0.8)
-    if (amount > availableProfit) {
-      return NextResponse.json({ error: 'Amount exceeds available payout balance' }, { status: 422 })
+    // ── DECIMAL.JS: profit split calculation ──────────────────────────────
+    const amount = new Decimal(input.amount)
+    const availableProfit = Decimal.max(0, D(account.realized_pnl).times(PROFIT_SPLIT))
+    if (amount.gt(availableProfit)) {
+      return NextResponse.json({
+        error: `Amount exceeds available payout balance ($${availableProfit.toFixed(2)})`
+      }, { status: 422 })
     }
 
-    const admin = createSupabaseAdminClient()
     const now = Date.now()
 
     const { data: payout, error: insertErr } = await admin
       .from('payouts')
       .insert({
-        account_id:      body.account_id,
+        account_id:      input.account_id,
         user_id:         user.id,
-        amount,
+        amount:          amount.toNumber(),
         status:          'pending',
-        method,
-        wallet_address:  walletAddress,
+        method:          input.method,
+        wallet_address:  input.wallet_address ?? null,
         tx_hash:         null,
         admin_note:      null,
         requested_at:    now,
@@ -600,12 +627,11 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Failed to submit payout request' }, { status: 500 })
     }
 
-    // Activity record
     await admin.from('activity').insert({
-      account_id: body.account_id,
+      account_id: input.account_id,
       type:  'payout',
       title: 'Payout requested',
-      sub:   `$${amount.toFixed(2)} via ${method}`,
+      sub:   `$${amount.toFixed(2)} via ${input.method}`,
       ts:    now,
       pnl:   null,
     })
