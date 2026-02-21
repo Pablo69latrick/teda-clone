@@ -33,7 +33,7 @@ const INSTRUMENT_DEFS: Record<string, InstrumentDef> = {
   'ARB-USD':   { price: 0.10420,  bid: 0.10419,  ask: 0.10421,  priceDec: 5, qtyDec: 2, type: 'crypto', maxLev: 20, minSize: 0.01 },
   'ASTER-USD': { price: 0.06917,  bid: 0.06916,  ask: 0.06918,  priceDec: 5, qtyDec: 2, type: 'crypto', maxLev: 20, minSize: 0.01 },
   'AUD-USD':   { price: 0.69584,  bid: 0.69583,  ask: 0.69585,  priceDec: 5, qtyDec: 2, type: 'forex',  maxLev: 100, minSize: 0.01 },
-  'BTC-USD':   { price: 95420.5,  bid: 95419.0,  ask: 95421.0,  priceDec: 1, qtyDec: 5, type: 'crypto', maxLev: 20, minSize: 0.001 },
+  'BTC-USD':   { price: 95420.50, bid: 95419.00, ask: 95421.00, priceDec: 2, qtyDec: 5, type: 'crypto', maxLev: 20, minSize: 0.001 },
   'DOGE-USD':  { price: 0.15320,  bid: 0.15318,  ask: 0.15321,  priceDec: 5, qtyDec: 2, type: 'crypto', maxLev: 20, minSize: 0.01 },
   'ETH-USD':   { price: 3450.25,  bid: 3449.75,  ask: 3450.75,  priceDec: 2, qtyDec: 4, type: 'crypto', maxLev: 20, minSize: 0.001 },
   'EUR-USD':   { price: 1.08432,  bid: 1.08431,  ask: 1.08433,  priceDec: 5, qtyDec: 2, type: 'forex',  maxLev: 100, minSize: 0.01 },
