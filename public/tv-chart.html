@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000000}
+  .tradingview-widget-container,
+  .tradingview-widget-container__widget{width:100%;height:100%}
+  /* Overlay container for smooth symbol transitions */
+  .tv-next{position:absolute;inset:0;z-index:2}
+</style>
+</head>
+<body>
+<div class="tradingview-widget-container" id="tv-main">
+  <div class="tradingview-widget-container__widget"></div>
+</div>
+<script>
+  // ── Config from URL params ─────────────────────────────────────────────────
+  var p = new URLSearchParams(window.location.search);
+  var currentSymbol = p.get('symbol') || 'BINANCE:BTCUSDT';
+  var interval      = p.get('interval') || '60';
+  var hideTools     = p.get('hideTools') === '1';
+
+  function buildConfig(sym) {
+    return {
+      "autosize": true,
+      "symbol": sym,
+      "interval": interval,
+      "timezone": "Etc/UTC",
+      "theme": "dark",
+      "style": "1",
+      "locale": "fr",
+      "toolbar_bg": "#000000",
+      "enable_publishing": false,
+      "allow_symbol_change": false,
+      "hide_side_toolbar": hideTools,
+      "hide_top_toolbar": false,
+      "hide_volume": true,
+      "withdateranges": true,
+      "save_image": true,
+      "details": false,
+      "hotlist": false,
+      "calendar": false,
+      "show_popup_button": false,
+      "backgroundColor": "rgba(0, 0, 0, 1)",
+      "gridColor": "rgba(42, 46, 57, 0)",
+      "overrides": {
+        "paneProperties.vertGridProperties.color": "rgba(0,0,0,0)",
+        "paneProperties.horzGridProperties.color": "rgba(0,0,0,0)",
+        "paneProperties.backgroundType": "solid",
+        "paneProperties.background": "#000000",
+        "mainSeriesProperties.showCountdown": true
+      },
+      "studies": [],
+      "support_host": "https://www.tradingview.com"
+    };
+  }
+
+  function mountWidget(sym, container) {
+    var s = document.createElement('script');
+    s.type = 'text/javascript';
+    s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+    s.async = true;
+    s.innerHTML = JSON.stringify(buildConfig(sym));
+    container.appendChild(s);
+  }
+
+  // ── Initial widget ─────────────────────────────────────────────────────────
+  mountWidget(currentSymbol, document.getElementById('tv-main'));
+
+  // ── Dynamic symbol changes via postMessage ─────────────────────────────────
+  // Strategy: create a NEW widget in an overlay div on top of the old one.
+  // When the new widget's inner iframe fires 'load', remove the old container.
+  // Result: old chart stays visible the whole time — zero flash.
+  var pendingOverlay = null;
+
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'set-symbol') return;
+    var newSym = e.data.symbol;
+    if (newSym === currentSymbol) return;
+    currentSymbol = newSym;
+
+    // Cancel any in-flight overlay (rapid symbol changes)
+    if (pendingOverlay) { pendingOverlay.remove(); pendingOverlay = null; }
+
+    // Create overlay container with the EXACT class names TradingView expects
+    var ov = document.createElement('div');
+    ov.className = 'tradingview-widget-container tv-next';
+    ov.innerHTML = '<div class="tradingview-widget-container__widget"></div>';
+    document.body.appendChild(ov);
+    pendingOverlay = ov;
+
+    mountWidget(newSym, ov);
+
+    // Poll for the inner iframe, listen for its load event, then swap
+    var tries = 0;
+    var poll = setInterval(function() {
+      // Superseded by a newer change
+      if (pendingOverlay !== ov) { ov.remove(); clearInterval(poll); return; }
+      tries++;
+      var iframe = ov.querySelector('iframe');
+      if (iframe) {
+        clearInterval(poll);
+        iframe.addEventListener('load', function onLoad() {
+          iframe.removeEventListener('load', onLoad);
+          if (pendingOverlay !== ov) { ov.remove(); return; }
+          // New chart ready — swap
+          var old = document.getElementById('tv-main');
+          if (old) old.remove();
+          ov.id = 'tv-main';
+          ov.className = 'tradingview-widget-container';
+          pendingOverlay = null;
+          // Notify parent that new chart is ready
+          window.parent.postMessage({ type: 'tv-symbol-ready', symbol: newSym }, '*');
+        });
+      }
+      if (tries > 300) clearInterval(poll); // 15s safety
+    }, 50);
+  });
+
+  // ── Forward macro keys to parent window ────────────────────────────────────
+  var MACRO_KEYS = ['f','F','w','W','a','A','b','B','s','S','Escape'];
+  document.addEventListener('keydown', function(e) {
+    if (MACRO_KEYS.indexOf(e.key) !== -1) {
+      window.parent.postMessage({ type: 'tv-keydown', key: e.key }, '*');
+    }
+  }, true);
+</script>
+</body>
+</html>

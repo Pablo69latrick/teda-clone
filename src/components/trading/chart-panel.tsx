@@ -1,21 +1,31 @@
 'use client'
 
 /**
- * Chart panel — embeds TradingView's full charting widget via tv.js.
+ * Chart panel — embeds TradingView via a static HTML page in /public.
  *
- * Uses the `TradingView.widget` constructor (loaded from tv.js CDN)
- * which is more reliable in Next.js than the embed-widget-advanced-chart.js
- * script approach (which depends on reading its own innerHTML for config).
+ * PERFORMANCE ARCHITECTURE:
  *
- * This gives us the EXACT TradingView experience:
- *   • Left sidebar with all drawing tools
- *   • Top toolbar with timeframes, indicators, chart types
- *   • Real-time candlestick data from Binance / FX
- *   • Crosshair, OHLC, volume, everything
+ *   1. DUAL-IFRAME (sidebar toggle — instant, zero reload):
+ *      Two iframes loaded ONCE at mount: one with sidebar, one without.
+ *      Pressing W flips z-index. No DOM changes, no reloads.
+ *
+ *   2. POSTMESSAGE SYMBOL CHANGE (zero iframe reload):
+ *      Symbol changes are sent via postMessage to tv-chart.html.
+ *      tv-chart.html creates a new TradingView widget ON TOP of the old one,
+ *      swaps when ready. Old chart stays visible = zero flash.
+ *      Iframes are NEVER remounted or navigated.
+ *
+ *   3. FULLSCREEN (instant CSS toggle):
+ *      Same component, same iframes. Parent wraps in `fixed inset-0 z-50`.
+ *
+ *   4. KEYBOARD BRIDGE (postMessage from iframes):
+ *      Macro keys (F/W/A/B/S/Esc) are forwarded from iframe to parent
+ *      via postMessage, so shortcuts work even when chart has focus.
  */
 
-import { useEffect, useRef, useState } from 'react'
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Maximize2, Minimize2, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 // ─── Symbol mapping: VerticalProp → TradingView ─────────────────────────────
 
@@ -36,15 +46,6 @@ const TV_SYMBOLS: Record<string, string> = {
   'AUD-USD':   'FX:AUDUSD',
 }
 
-// Extend Window to avoid TS errors for TradingView global
-declare global {
-  interface Window {
-    TradingView?: {
-      widget: new (config: Record<string, unknown>) => unknown
-    }
-  }
-}
-
 // ─── Props ──────────────────────────────────────────────────────────────────
 
 interface ChartPanelProps {
@@ -52,161 +53,131 @@ interface ChartPanelProps {
   accountId?: string
   onFullscreen?: () => void
   isFullscreen?: boolean
+  showToolsSidebar?: boolean
+  onToggleToolsSidebar?: () => void
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export function ChartPanel({ symbol, onFullscreen, isFullscreen }: ChartPanelProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [ready, setReady] = useState(false)
-  const widgetIdRef = useRef(`tv_${Date.now()}_${Math.random().toString(36).slice(2)}`)
-
+export function ChartPanel({
+  symbol,
+  onFullscreen,
+  isFullscreen,
+  showToolsSidebar = true,
+  onToggleToolsSidebar,
+}: ChartPanelProps) {
   const tvSymbol = TV_SYMBOLS[symbol] ?? 'BINANCE:BTCUSDT'
 
+  // ── Refs for the two iframes (never remounted) ────────────────────────────
+  const iframeWithRef    = useRef<HTMLIFrameElement>(null)
+  const iframeWithoutRef = useRef<HTMLIFrameElement>(null)
+
+  // ── Initial symbol captured once — iframes load this URL and never change ─
+  const [initialSymbol] = useState(tvSymbol)
+  const srcWith    = `/tv-chart.html?symbol=${encodeURIComponent(initialSymbol)}&interval=60`
+  const srcWithout = `/tv-chart.html?symbol=${encodeURIComponent(initialSymbol)}&interval=60&hideTools=1`
+
+  // ── Loading state — only for initial load ─────────────────────────────────
+  const [loadedWith, setLoadedWith]       = useState(false)
+  const [loadedWithout, setLoadedWithout] = useState(false)
+  const activeLoaded = showToolsSidebar ? loadedWith : loadedWithout
+
+  // ── Forward symbol changes via postMessage (zero reload) ──────────────────
+  const prevSymbolRef = useRef(tvSymbol)
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-
-    setReady(false)
-
-    // Fresh unique ID for this widget instance
-    const widgetId = `tv_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    widgetIdRef.current = widgetId
-
-    // Clear previous content
-    el.innerHTML = ''
-
-    // Create the container div that TradingView.widget will mount into
-    const widgetDiv = document.createElement('div')
-    widgetDiv.id = widgetId
-    widgetDiv.style.cssText = 'width:100%;height:100%'
-    el.appendChild(widgetDiv)
-
-    let fallbackTimer: ReturnType<typeof setTimeout>
-    let observer: MutationObserver | null = null
-
-    function createWidget() {
-      if (!window.TradingView) {
-        console.error('[ChartPanel] TradingView not available on window')
-        setReady(true)
-        return
-      }
-
-      try {
-        new window.TradingView.widget({
-          container_id: widgetId,
-          autosize: true,
-          symbol: tvSymbol,
-          interval: '60',
-          timezone: 'Etc/UTC',
-          theme: 'dark',
-          style: '1',
-          locale: 'fr',
-          toolbar_bg: '#131722',
-          enable_publishing: false,
-          allow_symbol_change: false,
-          hide_top_toolbar: false,
-          hide_side_toolbar: false,
-          withdateranges: true,
-          save_image: true,
-          details: false,
-          hotlist: false,
-          calendar: false,
-          show_popup_button: false,
-          popup_width: '1000',
-          popup_height: '650',
-        })
-      } catch (err) {
-        console.error('[ChartPanel] Failed to create TradingView widget:', err)
-        setReady(true)
-        return
-      }
-
-      // Detect when the iframe loads
-      observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-          for (const node of Array.from(mutation.addedNodes)) {
-            if (node instanceof HTMLIFrameElement) {
-              node.addEventListener('load', () => setReady(true))
-              observer?.disconnect()
-              observer = null
-              return
-            }
-          }
-        }
-      })
-      observer.observe(widgetDiv, { childList: true, subtree: true })
-
-      // Fallback: mark ready after 5s even if we couldn't detect iframe
-      fallbackTimer = setTimeout(() => {
-        setReady(true)
-        observer?.disconnect()
-        observer = null
-      }, 5000)
-    }
-
-    // Load tv.js from CDN if not already loaded
-    if (window.TradingView) {
-      createWidget()
-    } else {
-      // Check if script is already being loaded by another instance
-      const existingScript = document.querySelector('script[src="https://s.tradingview.com/tv.js"]')
-      if (existingScript) {
-        // Script exists but TradingView not ready yet — wait for it
-        const waitInterval = setInterval(() => {
-          if (window.TradingView) {
-            clearInterval(waitInterval)
-            createWidget()
-          }
-        }, 100)
-        fallbackTimer = setTimeout(() => {
-          clearInterval(waitInterval)
-          setReady(true)
-        }, 10000)
-      } else {
-        const script = document.createElement('script')
-        script.src = 'https://s.tradingview.com/tv.js'
-        script.async = true
-        script.onload = () => createWidget()
-        script.onerror = () => {
-          console.error('[ChartPanel] Failed to load tv.js')
-          setReady(true)
-        }
-        document.head.appendChild(script)
-      }
-    }
-
-    return () => {
-      clearTimeout(fallbackTimer)
-      observer?.disconnect()
-      el.innerHTML = ''
-    }
+    if (tvSymbol === prevSymbolRef.current) return
+    prevSymbolRef.current = tvSymbol
+    const msg = { type: 'set-symbol', symbol: tvSymbol }
+    iframeWithRef.current?.contentWindow?.postMessage(msg, '*')
+    iframeWithoutRef.current?.contentWindow?.postMessage(msg, '*')
   }, [tvSymbol])
 
   return (
-    <div className="relative flex flex-col h-full bg-[#131722]">
-      {/* TradingView widget mounts here */}
-      <div ref={containerRef} className="flex-1 min-h-0 w-full" />
+    <div className="relative flex flex-col h-full bg-card overflow-hidden">
+      {/*
+       * Dual-iframe container — both stacked, active one on top.
+       * Iframes are loaded ONCE and NEVER remounted.
+       */}
+      <div className="flex-1 min-h-0 relative">
+        {/* Iframe WITH sidebar (drawing tools visible) */}
+        <iframe
+          ref={iframeWithRef}
+          src={srcWith}
+          className="absolute inset-0 w-full h-full border-0"
+          style={{ zIndex: showToolsSidebar ? 2 : 1 }}
+          allowFullScreen
+          onLoad={() => setLoadedWith(true)}
+        />
 
-      {/* Loading spinner */}
-      {!ready && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#131722] z-10">
+        {/* Iframe WITHOUT sidebar (drawing tools hidden) */}
+        <iframe
+          ref={iframeWithoutRef}
+          src={srcWithout}
+          className="absolute inset-0 w-full h-full border-0"
+          style={{ zIndex: showToolsSidebar ? 1 : 2 }}
+          allowFullScreen
+          onLoad={() => setLoadedWithout(true)}
+        />
+      </div>
+
+      {/* Loading spinner — only until the ACTIVE iframe has loaded initially */}
+      {!activeLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-card z-10">
           <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-[#2962ff]/30 border-t-[#2962ff] rounded-full animate-spin" />
-            <span className="text-xs text-[#787b86]">Loading TradingView…</span>
+            <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+            <span className="text-xs text-muted-foreground">Loading TradingView…</span>
           </div>
         </div>
       )}
 
-      {/* Fullscreen toggle overlay */}
+      {/* ── Overlay buttons — hover-reveal, TradingView-style ────────────── */}
+
+      {/* Fullscreen toggle */}
       {onFullscreen && (
-        <button
-          onClick={onFullscreen}
-          className="absolute top-2 right-2 z-20 p-1.5 rounded-md bg-[#131722]/80 hover:bg-[#1e222d] border border-white/[0.06] text-[#787b86] hover:text-[#d1d4dc] transition-colors backdrop-blur-sm"
-          title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen (F)'}
+        <div className="absolute top-[38px] right-0 z-30 w-12 h-12 flex items-start justify-end pr-2 pt-1 group/fs">
+          <button
+            onClick={(e) => { e.stopPropagation(); onFullscreen() }}
+            className={cn(
+              'p-1 rounded transition-all duration-200',
+              isFullscreen
+                ? 'text-[#787b86] hover:text-white hover:bg-[#2a2e39]/80'
+                : 'text-[#787b86]/0 group-hover/fs:text-[#787b86] hover:!text-white hover:bg-[#2a2e39]/80',
+            )}
+            title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen (F)'}
+          >
+            {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          </button>
+        </div>
+      )}
+
+      {/* Tools sidebar toggle */}
+      {onToggleToolsSidebar && (
+        <div
+          className={cn(
+            'absolute bottom-0 z-30 flex items-end pb-3 group/sidebar',
+            showToolsSidebar ? 'left-[40px] w-16 h-16' : 'left-0 w-8 h-24',
+          )}
         >
-          {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-        </button>
+          {showToolsSidebar ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleToolsSidebar() }}
+              className="ml-3 p-1 rounded-md text-[#787b86]/0 group-hover/sidebar:text-[#787b86] hover:!text-white hover:bg-[#2a2e39] transition-all duration-200"
+              title="Hide tools (W)"
+            >
+              <PanelLeftClose className="size-3.5" />
+            </button>
+          ) : (
+            <div className="flex items-center h-full pl-0.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleToolsSidebar() }}
+                className="w-[3px] group-hover/sidebar:w-auto group-hover/sidebar:px-1.5 group-hover/sidebar:py-1 h-10 group-hover/sidebar:h-auto rounded-full group-hover/sidebar:rounded-md bg-[#787b86]/20 group-hover/sidebar:bg-[#2a2e39] hover:!bg-[#363a45] transition-all duration-200 overflow-hidden flex items-center justify-center"
+                title="Show tools (W)"
+              >
+                <PanelLeftOpen className="size-3.5 text-transparent group-hover/sidebar:text-[#787b86] hover:!text-white transition-colors duration-200" />
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

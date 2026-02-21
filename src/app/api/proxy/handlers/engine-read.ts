@@ -1,5 +1,15 @@
 /**
  * Engine read handlers — Supabase mode
+ *
+ * ARCHITECTURE: All data queries use the admin client (service_role) which
+ * bypasses RLS. Auth is validated first via createSupabaseServerClient(),
+ * and manual user_id / account ownership checks replace RLS filtering.
+ *
+ * Why: The "profiles: admin read all" RLS policy on profiles references
+ * profiles itself, causing infinite recursion (42P17) when using the
+ * user-session client. Using admin + manual ownership checks is the
+ * recommended production pattern.
+ *
  * Covers: instruments, positions, closed-positions, orders, trading-data,
  *         challenge-status, equity-history, activity, candles, leaderboard, accounts
  */
@@ -44,34 +54,55 @@ function mapPosition(p: Record<string, unknown>) {
   }
 }
 
-export async function handleEngineRead(req: NextRequest, apiPath: string): Promise<HandlerResult> {
+// ─── Helper: authenticate and return userId, or null ─────────────────────────
+
+async function getAuthUserId(): Promise<string | null> {
   const { createSupabaseServerClient } = await import('@/lib/supabase/server')
+  const supabase = await createSupabaseServerClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  return user?.id ?? null
+}
+
+// ─── Helper: verify account belongs to user ──────────────────────────────────
+
+async function verifyAccountOwnership(
+  admin: ReturnType<typeof import('@/lib/supabase/server').createSupabaseAdminClient>,
+  accountId: string,
+  userId: string
+): Promise<boolean> {
+  const { data } = await admin
+    .from('accounts').select('id')
+    .eq('id', accountId).eq('user_id', userId)
+    .single()
+  return !!data
+}
+
+export async function handleEngineRead(req: NextRequest, apiPath: string): Promise<HandlerResult> {
+  const { createSupabaseAdminClient } = await import('@/lib/supabase/server')
 
   // ── actions/accounts ────────────────────────────────────────────────────────
   if (apiPath === 'actions/accounts') {
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId) return NextResponse.json([], { status: 401 })
 
-    let { data: accounts } = await supabase
+    const admin = createSupabaseAdminClient()
+
+    let { data: accounts } = await admin
       .from('accounts').select('*')
-      .eq('user_id', session.user.id).eq('is_active', true)
+      .eq('user_id', userId).eq('is_active', true)
       .order('created_at', { ascending: true })
 
     // Auto-create a default evaluation account if the user has none
     if (!accounts || accounts.length === 0) {
-      const { createSupabaseAdminClient } = await import('@/lib/supabase/server')
-      const admin = createSupabaseAdminClient()
-
       const { data: template } = await admin
         .from('challenge_templates').select('id, starting_balance').order('created_at').limit(1).single()
 
-      const startBal = template?.starting_balance ?? 200_000
+      const startBal = template?.starting_balance ?? 100_000
 
       const { data: newAccount } = await admin
         .from('accounts')
         .insert({
-          user_id:              session.user.id,
+          user_id:              userId,
           name:                 'Phase 1 — Evaluation',
           account_type:         'prop',
           base_currency:        'USD',
@@ -104,10 +135,8 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   }
 
   // ── engine/instruments ──────────────────────────────────────────────────────
-  // Uses admin client (service role) because instruments are public data —
-  // no RLS needed. This ensures the list always loads regardless of auth state.
+  // Public data — no auth needed, uses admin client (no RLS).
   if (apiPath === 'engine/instruments') {
-    const { createSupabaseAdminClient } = await import('@/lib/supabase/server')
     const admin = createSupabaseAdminClient()
     const { data: rows, error } = await admin
       .from('instruments').select('*, price_cache(*)').eq('is_active', true).order('symbol')
@@ -119,11 +148,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/positions ────────────────────────────────────────────────────────
   if (apiPath === 'engine/positions') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json([], { status: 401 })
 
-    const { data: positions } = await supabase
+    const admin = createSupabaseAdminClient()
+    if (!(await verifyAccountOwnership(admin, accountId, userId))) {
+      return NextResponse.json([], { status: 403 })
+    }
+
+    const { data: positions } = await admin
       .from('positions').select('*')
       .eq('account_id', accountId).eq('status', 'open')
       .order('created_at', { ascending: false })
@@ -134,11 +167,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/closed-positions ─────────────────────────────────────────────────
   if (apiPath === 'engine/closed-positions') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json([], { status: 401 })
 
-    const { data: positions } = await supabase
+    const admin = createSupabaseAdminClient()
+    if (!(await verifyAccountOwnership(admin, accountId, userId))) {
+      return NextResponse.json([], { status: 403 })
+    }
+
+    const { data: positions } = await admin
       .from('positions').select('*')
       .eq('account_id', accountId).eq('status', 'closed')
       .order('exit_timestamp', { ascending: false })
@@ -150,11 +187,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/orders ───────────────────────────────────────────────────────────
   if (apiPath === 'engine/orders') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json([], { status: 401 })
 
-    const { data: orders } = await supabase
+    const admin = createSupabaseAdminClient()
+    if (!(await verifyAccountOwnership(admin, accountId, userId))) {
+      return NextResponse.json([], { status: 403 })
+    }
+
+    const { data: orders } = await admin
       .from('orders').select('*')
       .eq('account_id', accountId)
       .in('status', ['pending', 'partial'])
@@ -170,14 +211,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/trading-data ─────────────────────────────────────────────────────
   if (apiPath === 'engine/trading-data') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json(null, { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json(null, { status: 401 })
+
+    const admin = createSupabaseAdminClient()
 
     const [accountRes, positionsRes, instrumentsRes] = await Promise.all([
-      supabase.from('accounts').select('*').eq('id', accountId).single(),
-      supabase.from('positions').select('*').eq('account_id', accountId).eq('status', 'open'),
-      supabase.from('instruments').select('*, price_cache(*)').eq('is_active', true),
+      admin.from('accounts').select('*').eq('id', accountId).eq('user_id', userId).single(),
+      admin.from('positions').select('*').eq('account_id', accountId).eq('status', 'open'),
+      admin.from('instruments').select('*, price_cache(*)').eq('is_active', true),
     ])
 
     const instruments = (instrumentsRes.data ?? []).map(mapInstrumentRow)
@@ -195,12 +237,13 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/challenge-status ─────────────────────────────────────────────────
   if (apiPath === 'engine/challenge-status') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json(null, { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json(null, { status: 401 })
 
-    const { data: account } = await supabase
-      .from('accounts').select('*, challenge_templates(*)').eq('id', accountId).single()
+    const admin = createSupabaseAdminClient()
+
+    const { data: account } = await admin
+      .from('accounts').select('*, challenge_templates(*)').eq('id', accountId).eq('user_id', userId).single()
     if (!account) return NextResponse.json(null, { status: 404 })
 
     const template = account.challenge_templates as Record<string, unknown> | null
@@ -212,7 +255,7 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
       ? account.realized_pnl / account.starting_balance
       : 0
 
-    const { count: tradingDays } = await supabase
+    const { count: tradingDays } = await admin
       .from('equity_history').select('*', { count: 'exact', head: true })
       .eq('account_id', accountId).neq('pnl', 0)
 
@@ -221,11 +264,11 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
     startOfDayUtc.setUTCHours(0, 0, 0, 0)
 
     const [closedTodayRes, openPosRes] = await Promise.all([
-      supabase
+      admin
         .from('positions').select('realized_pnl')
         .eq('account_id', accountId).eq('status', 'closed')
         .gte('exit_timestamp', startOfDayUtc.getTime()),
-      supabase
+      admin
         .from('positions').select('direction, quantity, leverage, entry_price, symbol')
         .eq('account_id', accountId).eq('status', 'open'),
     ])
@@ -234,7 +277,7 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
       (s, p) => s + Number(p.realized_pnl ?? 0), 0
     )
 
-    const { data: pricesRaw } = await supabase
+    const { data: pricesRaw } = await admin
       .from('price_cache').select('symbol, current_price')
     const priceMap: Record<string, number> = {}
     for (const pr of pricesRaw ?? []) priceMap[pr.symbol] = Number(pr.current_price ?? 0)
@@ -252,10 +295,12 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
       ? Math.max(0, -dailyPnl / account.starting_balance)
       : 0
 
+    const acctStatus = account.account_status ?? 'active'
+
     return NextResponse.json({
       account_id: accountId,
-      phase: account.current_phase ?? 1,
-      status: account.account_status,
+      current_phase: account.current_phase ?? 1,
+      phase_type: rule.phase_type ?? 'evaluation',
       profit_target: rule.profit_target ?? 0.08,
       daily_loss_limit: rule.daily_loss_limit ?? 0.05,
       max_drawdown: rule.max_drawdown ?? 0.10,
@@ -266,19 +311,24 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
         : 0,
       trading_days: tradingDays ?? 0,
       min_trading_days: rule.min_trading_days ?? 5,
-      started_at: toEpochMs(account.created_at),
-      ends_at: null,
+      is_passed: acctStatus === 'passed' || acctStatus === 'funded',
+      is_breached: acctStatus === 'breached',
+      breach_reason: account.breach_reason ?? null,
     })
   }
 
   // ── engine/equity-history ───────────────────────────────────────────────────
   if (apiPath === 'engine/equity-history') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json([], { status: 401 })
 
-    const { data } = await supabase
+    const admin = createSupabaseAdminClient()
+    if (!(await verifyAccountOwnership(admin, accountId, userId))) {
+      return NextResponse.json([], { status: 403 })
+    }
+
+    const { data } = await admin
       .from('equity_history').select('ts, equity, pnl')
       .eq('account_id', accountId).order('ts', { ascending: true }).limit(90)
     return NextResponse.json(data ?? [])
@@ -287,11 +337,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/activity ─────────────────────────────────────────────────────────
   if (apiPath === 'engine/activity') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json([], { status: 401 })
 
-    const { data } = await supabase
+    const admin = createSupabaseAdminClient()
+    if (!(await verifyAccountOwnership(admin, accountId, userId))) {
+      return NextResponse.json([], { status: 403 })
+    }
+
+    const { data } = await admin
       .from('activity').select('*').eq('account_id', accountId)
       .order('ts', { ascending: false }).limit(30)
     return NextResponse.json(data ?? [])
@@ -300,11 +354,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   // ── engine/payouts ───────────────────────────────────────────────────────────
   if (apiPath === 'engine/payouts') {
     const accountId = req.nextUrl.searchParams.get('account_id')
-    const supabase = await createSupabaseServerClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session || !accountId) return NextResponse.json([], { status: 401 })
+    const userId = await getAuthUserId()
+    if (!userId || !accountId) return NextResponse.json([], { status: 401 })
 
-    const { data: payouts } = await supabase
+    const admin = createSupabaseAdminClient()
+    if (!(await verifyAccountOwnership(admin, accountId, userId))) {
+      return NextResponse.json([], { status: 403 })
+    }
+
+    const { data: payouts } = await admin
       .from('payouts').select('*')
       .eq('account_id', accountId)
       .order('requested_at', { ascending: false })
@@ -321,22 +379,18 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
 
   // ── engine/affiliate — user-facing affiliate dashboard ────────────────────
   if (apiPath === 'engine/affiliate') {
-    // Supabase mode would query affiliates + referrals tables
-    // For now, return null to fall through to mock
     return null
   }
 
   // ── engine/competitions — competition list ──────────────────────────────
   if (apiPath === 'engine/competitions') {
-    // Supabase mode would query competitions table
-    // For now, return null to fall through to mock
     return null
   }
 
   // ── leaderboard ─────────────────────────────────────────────────────────────
   if (apiPath === 'leaderboard') {
-    const supabase = await createSupabaseServerClient()
-    const { data } = await supabase.from('leaderboard_view').select('*').limit(50)
+    const admin = createSupabaseAdminClient()
+    const { data } = await admin.from('leaderboard_view').select('*').limit(50)
     return NextResponse.json(data ?? [])
   }
 

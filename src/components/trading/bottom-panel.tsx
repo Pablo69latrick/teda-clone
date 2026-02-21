@@ -5,10 +5,14 @@ import { createPortal } from 'react-dom'
 import {
   ChevronDown, ChevronUp, X, Minus, Plus,
   TrendingUp, TrendingDown, AlertTriangle,
-  Pencil, ArrowLeftRight,
+  Pencil, ArrowLeftRight, MoreHorizontal,
 } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 import { useTradingData, useClosedPositions, useOrders, useActivity, type ActivityItem } from '@/lib/hooks'
 import { useSWRConfig } from 'swr'
 import type { Position, Order } from '@/types'
@@ -251,29 +255,46 @@ const LivePositionRow = memo(function LivePositionRow({
           <span className="text-[10px] ml-0.5 opacity-70">({roePct >= 0 ? '+' : ''}{roePct.toFixed(1)}%)</span>
         </span>
         {/* Actions */}
-        <div className="flex items-center gap-0.5 justify-end">
+        <div className="flex items-center gap-1 justify-end">
           {closing ? (
-            <div className="size-3 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+            <div className="size-4 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
           ) : (
             <>
-              {onReverse && (
-                <button onClick={() => onReverse(pos)} title="Reverse position"
-                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
-                  <ArrowLeftRight className="size-3" />
-                </button>
-              )}
-              {onPartialClose && (
-                <button onClick={() => onPartialClose(pos)} title="Partial close"
-                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
-                  <Pencil className="size-3" />
-                </button>
-              )}
+              {/* Quick close button — always visible */}
               {onClose && (
                 <button onClick={() => onClose(pos.id)} title="Close position"
-                  className="p-1 rounded text-muted-foreground hover:text-loss hover:bg-loss/10 transition-all">
-                  <X className="size-3" />
+                  className="p-1.5 rounded text-muted-foreground hover:text-loss hover:bg-loss/10 transition-all">
+                  <X className="size-3.5" />
                 </button>
               )}
+              {/* Dropdown for more actions */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
+                    <MoreHorizontal className="size-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  {onClose && (
+                    <DropdownMenuItem onClick={() => onClose(pos.id)} className="text-loss focus:text-loss">
+                      <X className="size-3.5 mr-2" /> Close position
+                    </DropdownMenuItem>
+                  )}
+                  {onPartialClose && (
+                    <DropdownMenuItem onClick={() => onPartialClose(pos)}>
+                      <Pencil className="size-3.5 mr-2" /> Partial close
+                    </DropdownMenuItem>
+                  )}
+                  {onReverse && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => onReverse(pos)}>
+                        <ArrowLeftRight className="size-3.5 mr-2" /> Reverse position
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </>
           )}
         </div>
@@ -411,7 +432,7 @@ const AccountStatsBar = memo(function AccountStatsBar({
   marginUsed: number; marginAvailable: number; marginLevel: number
 }) {
   return (
-    <div className="flex items-center gap-4 px-3 py-1.5 border-b border-border/50 bg-muted/10 shrink-0 overflow-x-auto no-scrollbar">
+    <div className="flex items-center gap-4 px-3 py-1.5 border-b border-border bg-muted/10 shrink-0 overflow-x-auto no-scrollbar">
       {[
         { label: 'Balance', value: formatCurrency(balance), color: '' },
         { label: 'P&L', value: `${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}`, color: pnl >= 0 ? 'text-profit' : 'text-loss' },
@@ -452,7 +473,7 @@ function revalidateAll(mutate: ReturnType<typeof useSWRConfig>['mutate'], accoun
 // ─── Main panel ───────────────────────────────────────────────────────────────
 export function BottomPanel({ accountId }: BottomPanelProps) {
   const [activeTab, setActiveTab]       = useState<BottomTab>('positions')
-  const [collapsed, setCollapsed]       = useState(false)
+  const [collapsed, setCollapsed]       = useState(true)  // snap toggle: starts collapsed (tab bar only)
   const [closingId, setClosingId]       = useState<string | null>(null)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [partialPos, setPartialPos]     = useState<Position | null>(null)
@@ -476,10 +497,16 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
-  // ── Close position (with optimistic update) ──
+  // ── Close position (with optimistic update + safety timeout) ──
   const handleClose = useCallback(async (positionId: string) => {
     if (closingId) return
     setClosingId(positionId)
+
+    // Safety: reset closingId after 10s if fetch hangs
+    const safetyTimer = setTimeout(() => {
+      setClosingId(null)
+      addToast('error', 'Close request timed out — please retry')
+    }, 10_000)
 
     // Optimistic: remove from open positions instantly
     const prevPositions = tradingData?.positions ?? []
@@ -524,6 +551,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       // Rollback
       if (tradingData) mutateTradingData({ ...tradingData, positions: prevPositions }, false)
     } finally {
+      clearTimeout(safetyTimer)
       setClosingId(null)
     }
   }, [accountId, closingId, mutate, tradingData, mutateTradingData, mutateClosed, addToast])
@@ -687,6 +715,15 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
     { id: 'activity' as BottomTab,  label: 'Activity' },
   ], [openPositions.length, orders.length, closedPositions.length])
 
+  // Auto-expand when a new position appears
+  const prevPosCountRef = useRef(openPositions.length)
+  useEffect(() => {
+    if (openPositions.length > prevPosCountRef.current && collapsed) {
+      setCollapsed(false)
+    }
+    prevPosCountRef.current = openPositions.length
+  }, [openPositions.length, collapsed])
+
   return (
     <>
       {/* Partial close modal (portal to body) */}
@@ -701,27 +738,29 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
         document.body
       )}
 
-      <div className="relative flex flex-col h-full bg-card border-t border-border/50 overflow-hidden">
+      {/*
+       * Snap toggle panel:
+       * - Collapsed: just tabs bar (~36px) — shrink-0, no content
+       * - Expanded:  25vh with scroll — smooth CSS transition
+       */}
+      <div
+        className="relative flex flex-col bg-card border-t border-border shrink-0 transition-[height] duration-300 ease-in-out overflow-hidden"
+        style={{ height: collapsed ? '36px' : '25vh' }}
+      >
         {/* Toast notifications */}
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-        {/* Account Stats Bar (TradeLocker style) */}
-        <AccountStatsBar
-          balance={balance + totalRealizedPnl}
-          pnl={totalUnrealizedPnl}
-          equity={equity}
-          marginUsed={marginUsed}
-          marginAvailable={marginAvailable}
-          marginLevel={marginLevel}
-        />
-
-        {/* Tabs */}
-        <div className="flex items-center justify-between px-2 border-b border-border/50 shrink-0 h-9">
-          <div className="flex items-center">
+        {/* Tabs bar — always visible, acts as the collapsed state */}
+        <div className="flex items-center justify-between px-2 border-b border-border shrink-0 h-9">
+          <div className="flex items-center overflow-x-auto no-scrollbar min-w-0">
             {tabs.map(tab => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              <button key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id)
+                  if (collapsed) setCollapsed(false)  // click a tab = expand
+                }}
                 className={cn(
-                  'flex items-center gap-1 px-3 h-9 text-xs font-medium border-b-2 transition-colors',
+                  'flex items-center gap-1 px-2 sm:px-3 h-9 text-[11px] sm:text-xs font-medium border-b-2 transition-colors whitespace-nowrap shrink-0',
                   activeTab === tab.id
                     ? 'border-primary text-foreground'
                     : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -734,111 +773,121 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
             ))}
           </div>
           <button onClick={() => setCollapsed(v => !v)}
-            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors shrink-0 ml-1"
+            title={collapsed ? 'Expand panel' : 'Collapse panel'}>
             {collapsed ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           </button>
         </div>
 
-        {!collapsed && (
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
+        {/* Content area — scroll vertically + horizontally */}
+        <div className="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar min-h-0">
 
-            {/* POSITIONS tab */}
-            {activeTab === 'positions' && (
-              openPositions.length === 0
-                ? <EmptyState message="No open positions" sub="Place a trade to see your positions here" />
-                : (
-                  <div className="overflow-x-auto">
-                    <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[900px]"
-                      style={{ display: 'grid', gridTemplateColumns: '90px 50px 80px 90px 90px 80px 80px 70px 80px 120px 70px' }}>
-                      <span>Instrument</span><span>Side</span><span>Size</span>
-                      <span>Entry</span><span>Market</span>
-                      <span>Margin</span><span>Exposure</span><span>Liq.</span>
-                      <span>Fees</span><span>P&L</span><span>Actions</span>
-                    </div>
-                    {openPositions.map(pos => (
-                      <LivePositionRow
-                        key={pos.id}
-                        pos={pos}
-                        markPrice={prices[pos.symbol] ?? pos.entry_price}
-                        onClose={closingId === pos.id ? undefined : handleClose}
-                        onPartialClose={closingId === pos.id ? undefined : setPartialPos}
-                        onReverse={closingId === pos.id ? undefined : handleReverse}
-                        closing={closingId === pos.id}
-                      />
-                    ))}
+          {/* Account Stats Bar */}
+          <AccountStatsBar
+            balance={balance + totalRealizedPnl}
+            pnl={totalUnrealizedPnl}
+            equity={equity}
+            marginUsed={marginUsed}
+            marginAvailable={marginAvailable}
+            marginLevel={marginLevel}
+          />
+
+          {/* POSITIONS tab */}
+          {activeTab === 'positions' && (
+            openPositions.length === 0
+              ? <EmptyState message="No open positions" sub="Place a trade to see your positions here" />
+              : (
+                <div className="overflow-x-auto">
+                  <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[900px] sticky top-0 bg-card z-10"
+                    style={{ display: 'grid', gridTemplateColumns: '90px 50px 80px 90px 90px 80px 80px 70px 80px 120px 70px' }}>
+                    <span>Instrument</span><span>Side</span><span>Size</span>
+                    <span>Entry</span><span>Market</span>
+                    <span>Margin</span><span>Exposure</span><span>Liq.</span>
+                    <span>Fees</span><span>P&L</span><span>Actions</span>
                   </div>
-                )
-            )}
+                  {openPositions.map(pos => (
+                    <LivePositionRow
+                      key={pos.id}
+                      pos={pos}
+                      markPrice={prices[pos.symbol] ?? pos.entry_price}
+                      onClose={closingId === pos.id ? undefined : handleClose}
+                      onPartialClose={closingId === pos.id ? undefined : setPartialPos}
+                      onReverse={closingId === pos.id ? undefined : handleReverse}
+                      closing={closingId === pos.id}
+                    />
+                  ))}
+                </div>
+              )
+          )}
 
-            {/* ORDERS (Pending) tab */}
-            {activeTab === 'orders' && (
-              orders.length === 0
-                ? <EmptyState message="No pending orders" sub="Limit and stop orders will appear here" />
-                : (
-                  <div className="overflow-x-auto">
-                    <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[640px]"
-                      style={{ display: 'grid', gridTemplateColumns: '90px 60px 70px 80px 80px 80px 60px 60px' }}>
-                      <span>Symbol</span><span>Side</span><span>Type</span>
-                      <span>Price</span><span>Qty</span><span>Leverage</span>
-                      <span>Status</span><span></span>
-                    </div>
-                    {orders.map(order => (
-                      <OrderRow key={order.id} order={order} onCancel={handleCancelOrder} cancelling={cancellingId === order.id} />
-                    ))}
+          {/* ORDERS (Pending) tab */}
+          {activeTab === 'orders' && (
+            orders.length === 0
+              ? <EmptyState message="No pending orders" sub="Limit and stop orders will appear here" />
+              : (
+                <div className="overflow-x-auto">
+                  <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[640px] sticky top-0 bg-card z-10"
+                    style={{ display: 'grid', gridTemplateColumns: '90px 60px 70px 80px 80px 80px 60px 60px' }}>
+                    <span>Symbol</span><span>Side</span><span>Type</span>
+                    <span>Price</span><span>Qty</span><span>Leverage</span>
+                    <span>Status</span><span></span>
                   </div>
-                )
-            )}
+                  {orders.map(order => (
+                    <OrderRow key={order.id} order={order} onCancel={handleCancelOrder} cancelling={cancellingId === order.id} />
+                  ))}
+                </div>
+              )
+          )}
 
-            {/* CLOSED POSITIONS tab */}
-            {activeTab === 'history' && (
-              closedPositions.length === 0
-                ? <EmptyState message="No closed positions" sub="Closed trades will appear here" />
-                : (
-                  <div className="overflow-x-auto">
-                    <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[700px]"
-                      style={{ display: 'grid', gridTemplateColumns: '90px 50px 70px 90px 90px 80px 120px 80px' }}>
-                      <span>Symbol</span><span>Side</span><span>Size</span>
-                      <span>Entry</span><span>Exit</span><span>Fees</span>
-                      <span>P&L</span><span>Closed At</span>
-                    </div>
-                    {closedPositions.map(pos => <ClosedPositionRow key={pos.id} pos={pos} />)}
+          {/* CLOSED POSITIONS tab */}
+          {activeTab === 'history' && (
+            closedPositions.length === 0
+              ? <EmptyState message="No closed positions" sub="Closed trades will appear here" />
+              : (
+                <div className="overflow-x-auto">
+                  <div className="px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider border-b border-border/50 min-w-[700px] sticky top-0 bg-card z-10"
+                    style={{ display: 'grid', gridTemplateColumns: '90px 50px 70px 90px 90px 80px 120px 80px' }}>
+                    <span>Symbol</span><span>Side</span><span>Size</span>
+                    <span>Entry</span><span>Exit</span><span>Fees</span>
+                    <span>P&L</span><span>Closed At</span>
                   </div>
-                )
-            )}
+                  {closedPositions.map(pos => <ClosedPositionRow key={pos.id} pos={pos} />)}
+                </div>
+              )
+          )}
 
-            {/* BALANCE tab */}
-            {activeTab === 'balance' && account && (
-              <div className="p-4 grid grid-cols-2 sm:grid-cols-3 gap-4">
-                {[
-                  { label: 'Account Type',      value: account.account_type },
-                  { label: 'Starting Balance',   value: formatCurrency(account.injected_funds) },
-                  { label: 'Net Worth',          value: formatCurrency(account.net_worth) },
-                  { label: 'Available Margin',   value: formatCurrency(account.available_margin) },
-                  { label: 'Unrealized P&L',     value: `${totalUnrealizedPnl >= 0 ? '+' : ''}${formatCurrency(totalUnrealizedPnl)}`, color: totalUnrealizedPnl >= 0 ? 'text-profit' : 'text-loss' },
-                  { label: 'Realized P&L',       value: `${account.total_pnl >= 0 ? '+' : ''}${formatCurrency(account.total_pnl)}`, color: account.total_pnl >= 0 ? 'text-profit' : 'text-loss' },
-                  { label: 'Margin Required',    value: formatCurrency(account.total_margin_required) },
-                  { label: 'Margin Level',       value: marginLevel === Infinity || marginUsed === 0 ? '∞' : `${marginLevel.toFixed(0)}%`, color: marginLevel < 150 && marginUsed > 0 ? 'text-loss' : '' },
-                  { label: 'Open Positions',     value: String(openPositions.length) },
-                  { label: 'Pending Orders',     value: String(orders.length) },
-                  { label: 'Margin Mode',        value: account.default_margin_mode },
-                  { label: 'Currency',           value: account.base_currency },
-                ].map(item => (
-                  <div key={item.label} className="flex flex-col gap-0.5">
-                    <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{item.label}</span>
-                    <span className={cn('text-sm font-medium tabular-nums capitalize', item.color ?? '')}>{item.value}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+          {/* BALANCE tab */}
+          {activeTab === 'balance' && account && (
+            <div className="p-4 grid grid-cols-2 sm:grid-cols-3 gap-4">
+              {[
+                { label: 'Account Type',      value: account.account_type },
+                { label: 'Starting Balance',   value: formatCurrency(account.injected_funds) },
+                { label: 'Net Worth',          value: formatCurrency(account.net_worth) },
+                { label: 'Available Margin',   value: formatCurrency(account.available_margin) },
+                { label: 'Unrealized P&L',     value: `${totalUnrealizedPnl >= 0 ? '+' : ''}${formatCurrency(totalUnrealizedPnl)}`, color: totalUnrealizedPnl >= 0 ? 'text-profit' : 'text-loss' },
+                { label: 'Realized P&L',       value: `${account.total_pnl >= 0 ? '+' : ''}${formatCurrency(account.total_pnl)}`, color: account.total_pnl >= 0 ? 'text-profit' : 'text-loss' },
+                { label: 'Margin Required',    value: formatCurrency(account.total_margin_required) },
+                { label: 'Margin Level',       value: marginLevel === Infinity || marginUsed === 0 ? '∞' : `${marginLevel.toFixed(0)}%`, color: marginLevel < 150 && marginUsed > 0 ? 'text-loss' : '' },
+                { label: 'Open Positions',     value: String(openPositions.length) },
+                { label: 'Pending Orders',     value: String(orders.length) },
+                { label: 'Margin Mode',        value: account.default_margin_mode },
+                { label: 'Currency',           value: account.base_currency },
+              ].map(item => (
+                <div key={item.label} className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{item.label}</span>
+                  <span className={cn('text-sm font-medium tabular-nums capitalize', item.color ?? '')}>{item.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
-            {/* ACTIVITY tab */}
-            {activeTab === 'activity' && (
-              activity.length === 0
-                ? <EmptyState message="No activity yet" sub="Trade events will appear here in real time" />
-                : <div>{activity.map(item => <ActivityRow key={item.id} item={item} />)}</div>
-            )}
-          </div>
-        )}
+          {/* ACTIVITY tab */}
+          {activeTab === 'activity' && (
+            activity.length === 0
+              ? <EmptyState message="No activity yet" sub="Trade events will appear here in real time" />
+              : <div>{activity.map(item => <ActivityRow key={item.id} item={item} />)}</div>
+          )}
+        </div>
       </div>
     </>
   )

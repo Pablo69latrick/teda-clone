@@ -318,20 +318,29 @@ export async function handleAdminWrite(req: NextRequest, apiPath: string): Promi
       .eq('position_id', body.position_id)
       .in('status', ['pending', 'partial'])
 
-    // Release margin
+    // Release margin + update account totals
     const { data: acct } = await admin
       .from('accounts')
-      .select('available_margin, realized_pnl')
+      .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
       .eq('id', pos.account_id)
       .single()
 
     if (acct) {
+      const newAvailableMargin = Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee
+      const newTotalMarginReq  = Math.max(0, Number(acct.total_margin_required) - Number(pos.isolated_margin))
+      const newRealizedPnl     = Number(acct.realized_pnl) + realizedPnl
+      const newTotalPnl        = Number(acct.total_pnl) + realizedPnl
+      const newNetWorth        = Number(acct.net_worth) + realizedPnl - closeFee
+
       await admin
         .from('accounts')
         .update({
-          available_margin: Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee,
-          realized_pnl:     Number(acct.realized_pnl) + realizedPnl,
-          updated_at:       new Date().toISOString(),
+          available_margin:      newAvailableMargin,
+          total_margin_required: newTotalMarginReq,
+          realized_pnl:          newRealizedPnl,
+          total_pnl:             newTotalPnl,
+          net_worth:             newNetWorth,
+          updated_at:            new Date().toISOString(),
         })
         .eq('id', pos.account_id)
     }

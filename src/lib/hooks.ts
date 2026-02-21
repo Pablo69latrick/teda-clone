@@ -75,8 +75,8 @@ export function useTradingData(accountId: string | undefined) {
     fetcher,
     {
       ...LIVE_OPTS,
-      refreshInterval: 30_000,        // 30s — SSE handles price updates, this is for positions/orders sync
-      dedupingInterval: 5_000,        // dedup within 5s window
+      refreshInterval: 3_000,         // 3s — fast sync for positions/orders/account
+      dedupingInterval: 1_000,        // 1s dedup — allows rapid revalidation after mutations
     }
   )
 }
@@ -112,8 +112,8 @@ export function useOrders(accountId: string | undefined) {
     fetcher,
     {
       ...LIVE_OPTS,
-      refreshInterval: 5_000,
-      dedupingInterval: 3_000,
+      refreshInterval: 3_000,         // 3s — fast sync for pending orders
+      dedupingInterval: 1_000,
     }
   )
 }
@@ -124,7 +124,7 @@ export function useClosedPositions(accountId: string | undefined) {
   return useSWR<Position[]>(
     accountId ? `/api/proxy/engine/closed-positions?account_id=${accountId}` : null,
     fetcher,
-    { revalidateOnFocus: false, dedupingInterval: 30_000, keepPreviousData: true }
+    { ...LIVE_OPTS, refreshInterval: 5_000, dedupingInterval: 1_000 }
   )
 }
 
@@ -290,7 +290,7 @@ export function useActivity(accountId: string | undefined) {
   return useSWR<ActivityItem[]>(
     accountId ? `/api/proxy/engine/activity?account_id=${accountId}` : null,
     fetcher,
-    { revalidateOnFocus: false, dedupingInterval: 30_000, keepPreviousData: true }
+    { ...LIVE_OPTS, refreshInterval: 5_000, dedupingInterval: 1_000 }
   )
 }
 

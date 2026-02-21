@@ -1,20 +1,22 @@
 'use client'
 
 /**
- * Watchlist panel — TradingView-exact layout and tick behavior.
+ * Watchlist panel — TradingView right-sidebar style.
  *
  * Features:
+ *   • TradingView header with title + icon
  *   • Columns: Symb | Last | Chg | Chg%
  *   • Collapsible category groups (CRYPTO, FOREX)
  *   • Persistent green/red row backgrounds on tick (doesn't fade to neutral)
  *   • 250ms bright flash on new tick, then settles to dim persistent tint
+ *   • Hover preselection: blue left border + illuminated background
  *   • Price/change text colored per tick direction
  *   • Session-based change: first received price → current live price
  *   • TradingView color palette: #26a69a green, #ef5350 red, #2962ff selection
  */
 
 import { useState, useRef, useEffect, memo, useCallback } from 'react'
-import { Search, ChevronDown, ChevronRight } from 'lucide-react'
+import { Search, ChevronDown, ChevronRight, LayoutList, Star } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useInstruments } from '@/lib/hooks'
 import { useLivePrices } from '@/lib/price-store'
@@ -29,7 +31,6 @@ interface WatchlistPanelProps {
 
 // ─── Fallback instruments (before API loads) ────────────────────────────────
 
-// Full FALLBACK with all 14 instruments — ensures watchlist always renders even if API is slow
 const _fb = (id: string, sym: string, type: 'crypto' | 'forex', base: string, dec: number, price: number): Instrument => ({
   id, symbol: sym, instrument_type: type, base_currency: base, quote_currency: 'USD',
   margin_requirement: type === 'forex' ? 0.001 : 0.01, min_order_size: 0.01, max_leverage: type === 'forex' ? 100 : 20,
@@ -139,33 +140,38 @@ const TickerRow = memo(function TickerRow({
     <button
       onClick={onSelect}
       className={cn(
-        'w-full grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-1.5 px-2.5 py-[6px] text-[11px] tabular-nums transition-all',
+        'w-full grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-1.5 px-2.5 py-[5px] text-[11px] tabular-nums transition-all cursor-pointer group',
+        // Left border for hover preselection + selected state
+        'border-l-2 border-l-transparent',
+        'hover:bg-[#1e222d] hover:border-l-[#2962ff]/70',
         // Persistent row background — stays colored until next tick
-        dir === 'up' && (flash ? 'bg-[#26a69a]/18' : 'bg-[#26a69a]/[0.05]'),
-        dir === 'down' && (flash ? 'bg-[#ef5350]/18' : 'bg-[#ef5350]/[0.05]'),
-        dir === null && 'hover:bg-white/[0.03]',
+        dir === 'up' && (flash ? 'bg-[#26a69a]/18' : 'bg-[#26a69a]/[0.04]'),
+        dir === 'down' && (flash ? 'bg-[#ef5350]/18' : 'bg-[#ef5350]/[0.04]'),
         // Selected row
-        isSelected && '!bg-[#2962ff]/10',
+        isSelected && '!bg-[#2962ff]/[0.08] !border-l-[#2962ff]',
         // Transition timing
-        flash ? 'duration-0' : 'duration-300',
+        flash ? 'duration-0' : 'duration-150',
       )}
     >
       {/* ── Symbol column ── */}
       <div className="flex items-center gap-1.5 min-w-0 text-left">
         <span
           className={cn(
-            'w-[6px] h-[6px] rounded-full shrink-0',
+            'w-[5px] h-[5px] rounded-full shrink-0',
             isCrypto ? 'bg-[#f0b90b]' : 'bg-[#2962ff]'
           )}
         />
-        <span className="font-medium text-[#d1d4dc] truncate leading-none">{sym}</span>
+        <span className={cn(
+          'font-medium truncate leading-none',
+          isSelected ? 'text-[#d1d4dc]' : 'text-[#b2b5be] group-hover:text-[#d1d4dc]',
+        )}>{sym}</span>
       </div>
 
       {/* ── Last price ── */}
       <span
         className={cn(
           'text-right font-medium leading-none',
-          dir === 'up' ? 'text-[#26a69a]' : dir === 'down' ? 'text-[#ef5350]' : 'text-[#d1d4dc]',
+          dir === 'up' ? 'text-[#26a69a]' : dir === 'down' ? 'text-[#ef5350]' : 'text-[#b2b5be]',
         )}
       >
         {fmtPrice(price, dec)}
@@ -174,7 +180,7 @@ const TickerRow = memo(function TickerRow({
       {/* ── Change (absolute) ── */}
       <span
         className={cn(
-          'text-right leading-none min-w-[50px]',
+          'text-right leading-none min-w-[48px]',
           change >= 0 ? 'text-[#26a69a]' : 'text-[#ef5350]',
         )}
       >
@@ -184,7 +190,7 @@ const TickerRow = memo(function TickerRow({
       {/* ── Change% ── */}
       <span
         className={cn(
-          'text-right leading-none min-w-[46px]',
+          'text-right leading-none min-w-[44px]',
           changePct >= 0 ? 'text-[#26a69a]' : 'text-[#ef5350]',
         )}
       >
@@ -210,7 +216,7 @@ function CategoryHeader({
   return (
     <button
       onClick={onToggle}
-      className="w-full flex items-center gap-1 px-2.5 py-[6px] text-[10px] font-bold text-[#787b86] hover:text-[#d1d4dc] transition-colors uppercase tracking-wider border-b border-[#2a2e39]/50"
+      className="w-full flex items-center gap-1 px-2.5 py-[5px] text-[10px] font-semibold text-[#787b86] hover:text-[#b2b5be] transition-colors uppercase tracking-wider bg-light-dark/40"
     >
       {isOpen ? (
         <ChevronDown className="size-3 shrink-0" />
@@ -218,7 +224,7 @@ function CategoryHeader({
         <ChevronRight className="size-3 shrink-0" />
       )}
       <span>{label}</span>
-      <span className="text-[#787b86]/40 text-[9px] ml-1">{count}</span>
+      <span className="text-[#787b86]/40 text-[9px] ml-0.5">{count}</span>
     </button>
   )
 }
@@ -227,6 +233,7 @@ function CategoryHeader({
 
 export function WatchlistPanel({ selectedSymbol, onSelectSymbol }: WatchlistPanelProps) {
   const [search, setSearch] = useState('')
+  const [showSearch, setShowSearch] = useState(false)
   const [openCats, setOpenCats] = useState<Record<string, boolean>>({
     crypto: true,
     forex: true,
@@ -259,45 +266,84 @@ export function WatchlistPanel({ selectedSymbol, onSelectSymbol }: WatchlistPane
   }, [])
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-[#131722]">
-      {/* ── Search ── */}
-      <div className="px-2 py-1.5 shrink-0 border-b border-[#2a2e39]">
-        <div className="flex items-center gap-2 bg-[#1e222d] rounded px-2 py-[5px]">
-          <Search className="size-3.5 text-[#787b86] shrink-0" />
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search…"
-            className="bg-transparent focus:outline-none flex-1 text-[11px] font-medium text-[#d1d4dc] placeholder:text-[#787b86]/50"
-          />
+    <div className="flex flex-col h-full overflow-hidden bg-card">
+      {/* ── TradingView-style header ── */}
+      <div className="flex items-center justify-between px-2.5 py-[7px] shrink-0 border-b border-border">
+        <div className="flex items-center gap-1.5">
+          <LayoutList className="size-3.5 text-[#787b86]" />
+          <span className="text-[11px] font-semibold text-[#d1d4dc] tracking-wide">Watchlist</span>
+        </div>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={() => setShowSearch(v => !v)}
+            className={cn(
+              'p-1 rounded transition-colors',
+              showSearch
+                ? 'bg-[#2962ff]/15 text-[#2962ff]'
+                : 'text-[#787b86] hover:text-[#d1d4dc] hover:bg-white/[0.04]',
+            )}
+            title="Search (Ctrl+F)"
+          >
+            <Search className="size-3.5" />
+          </button>
+          <button
+            className="p-1 rounded text-[#787b86] hover:text-[#d1d4dc] hover:bg-white/[0.04] transition-colors"
+            title="Favorites"
+          >
+            <Star className="size-3.5" />
+          </button>
         </div>
       </div>
 
+      {/* ── Search (toggle) ── */}
+      {showSearch && (
+        <div className="px-2 py-1.5 shrink-0 border-b border-border">
+          <div className="flex items-center gap-2 bg-[#1e222d] rounded px-2 py-[4px] border border-border focus-within:border-[#2962ff]/50 transition-colors">
+            <Search className="size-3 text-[#787b86] shrink-0" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search…"
+              autoFocus
+              className="bg-transparent focus:outline-none flex-1 text-[11px] font-medium text-[#d1d4dc] placeholder:text-[#787b86]/40"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="text-[#787b86] hover:text-[#d1d4dc] text-[10px] leading-none"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Column headers ── */}
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-1.5 px-2.5 py-[5px] shrink-0 border-b border-[#2a2e39]">
-        <span className="text-[9px] text-[#787b86]/60 font-semibold uppercase tracking-wider">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-1.5 px-2.5 py-[4px] shrink-0 border-b border-border/60 bg-light-dark/30">
+        <span className="text-[9px] text-[#787b86]/50 font-semibold uppercase tracking-wider">
           Symb
         </span>
-        <span className="text-[9px] text-[#787b86]/60 font-semibold uppercase tracking-wider text-right">
+        <span className="text-[9px] text-[#787b86]/50 font-semibold uppercase tracking-wider text-right">
           Last
         </span>
-        <span className="text-[9px] text-[#787b86]/60 font-semibold uppercase tracking-wider text-right min-w-[50px]">
+        <span className="text-[9px] text-[#787b86]/50 font-semibold uppercase tracking-wider text-right min-w-[48px]">
           Chg
         </span>
-        <span className="text-[9px] text-[#787b86]/60 font-semibold uppercase tracking-wider text-right min-w-[46px]">
+        <span className="text-[9px] text-[#787b86]/50 font-semibold uppercase tracking-wider text-right min-w-[44px]">
           Chg%
         </span>
       </div>
 
-      {/* ── Rows ── */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
+      {/* ── Rows — standard TradingView layout: header at top, items below ── */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col">
         {search ? (
           // Flat list when searching
           filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-1 py-8 text-center">
-              <Search className="size-5 text-[#787b86]/30" />
-              <p className="text-[11px] text-[#787b86]/50">No results for &quot;{search}&quot;</p>
+            <div className="flex flex-col items-center justify-center gap-1.5 py-8 text-center">
+              <Search className="size-5 text-[#787b86]/20" />
+              <p className="text-[11px] text-[#787b86]/40">No results for &quot;{search}&quot;</p>
             </div>
           ) : (
             filtered.map(inst => (
@@ -312,13 +358,13 @@ export function WatchlistPanel({ selectedSymbol, onSelectSymbol }: WatchlistPane
             ))
           )
         ) : (
-          // Grouped by category
+          // Grouped by category — header on top, items below
           CATEGORIES.map(cat => {
             const items = filtered.filter(cat.filter)
             if (items.length === 0) return null
             const isOpen = openCats[cat.id] !== false
             return (
-              <div key={cat.id}>
+              <div key={cat.id} className="flex flex-col">
                 <CategoryHeader
                   label={cat.label}
                   count={items.length}
@@ -340,6 +386,25 @@ export function WatchlistPanel({ selectedSymbol, onSelectSymbol }: WatchlistPane
             )
           })
         )}
+      </div>
+
+      {/* ── Footer with shortcut hints ── */}
+      <div className="px-2.5 py-[4px] shrink-0 border-t border-border bg-light-dark/30">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] text-[#787b86]/40">
+            {list.length} instruments
+          </span>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[9px] text-[#787b86]/30">
+              <kbd className="px-1 py-0.5 rounded bg-[#1e222d] text-[#787b86]/50 text-[8px] font-mono">A</kbd>
+              <span className="ml-1">assets</span>
+            </span>
+            <span className="text-[9px] text-[#787b86]/30">
+              <kbd className="px-1 py-0.5 rounded bg-[#1e222d] text-[#787b86]/50 text-[8px] font-mono">W</kbd>
+              <span className="ml-1">tools</span>
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   )

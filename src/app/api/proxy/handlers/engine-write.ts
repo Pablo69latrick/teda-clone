@@ -12,6 +12,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
   // ── engine/orders (POST) ────────────────────────────────────────────────────
   if (apiPath === 'engine/orders') {
+    const t0 = Date.now()
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
@@ -46,12 +47,21 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
     const admin = createSupabaseAdminClient()
 
+    // ── Parallel DB queries (account + instrument + price in one round-trip) ──
+    const [accountRes, instrumentRes, priceRes] = await Promise.all([
+      admin.from('accounts').select('id, user_id, is_active, available_margin')
+        .eq('id', body.account_id).single(),
+      admin.from('instruments').select('price_decimals, qty_decimals, max_leverage, min_order_size, margin_requirement')
+        .eq('symbol', body.symbol).eq('is_active', true).single(),
+      admin.from('price_cache').select('current_price, current_bid, current_ask, mark_price')
+        .eq('symbol', body.symbol).single(),
+    ])
+
+    const account    = accountRes.data
+    const instrument = instrumentRes.data
+    const priceRow   = priceRes.data
+
     // Validate account ownership
-    const { data: account } = await supabase
-      .from('accounts')
-      .select('id, user_id, is_active, available_margin')
-      .eq('id', body.account_id)
-      .single()
     if (!account || !account.is_active) {
       return NextResponse.json({ error: 'Account not found or inactive' }, { status: 404 })
     }
@@ -59,13 +69,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Verify symbol exists
-    const { data: instrument } = await admin
-      .from('instruments')
-      .select('price_decimals, qty_decimals, max_leverage, min_order_size, margin_requirement')
-      .eq('symbol', body.symbol)
-      .eq('is_active', true)
-      .single()
+    // Validate instrument
     if (!instrument) {
       return NextResponse.json({ error: 'Unknown or inactive symbol' }, { status: 400 })
     }
@@ -77,13 +81,6 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
         error: `Minimum order size is ${instrument.min_order_size}`
       }, { status: 400 })
     }
-
-    // Get current price
-    const { data: priceRow } = await admin
-      .from('price_cache')
-      .select('current_price, current_bid, current_ask, mark_price')
-      .eq('symbol', body.symbol)
-      .single()
 
     const execPrice = body.order_type === 'market'
       ? (body.direction === 'long'
@@ -144,6 +141,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
         return NextResponse.json({ error: 'Failed to open position. Please try again.' }, { status: 500 })
       }
 
+      console.log(`[orders POST] market fill: ${Date.now() - t0}ms`)
       return NextResponse.json({ ...rpcResult, status: 'filled' }, { status: 201 })
     }
 
@@ -209,40 +207,45 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
   // ── engine/close-position ───────────────────────────────────────────────────
   if (apiPath === 'engine/close-position') {
+    const t0 = Date.now()
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
-    const supabase = await createSupabaseServerClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     if (!body.position_id || typeof body.position_id !== 'string') {
       return NextResponse.json({ error: 'Invalid position_id' }, { status: 400 })
     }
 
-    const admin = createSupabaseAdminClient()
     const positionId = body.position_id as string
+    const admin = createSupabaseAdminClient()
 
-    const { data: pos } = await supabase
-      .from('positions')
-      .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
-      .eq('id', positionId)
-      .eq('status', 'open')
-      .single()
+    // ── PARALLEL: auth + position lookup at the same time ──
+    const [authResult, posResult] = await Promise.all([
+      createSupabaseServerClient().then(sb => sb.auth.getUser()),
+      admin.from('positions')
+        .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
+        .eq('id', positionId).eq('status', 'open').single(),
+    ])
 
+    const user = authResult.data?.user
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const pos = posResult.data
     if (!pos) {
       return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
     }
 
-    const { data: posAccount } = await supabase
-      .from('accounts').select('id, user_id').eq('id', pos.account_id).single()
-    if (!posAccount || posAccount.user_id !== user.id) {
+    // ── PARALLEL: verify ownership + fetch price ──
+    const [ownerRes, priceRes] = await Promise.all([
+      admin.from('accounts').select('id, user_id').eq('id', pos.account_id).single(),
+      admin.from('price_cache').select('current_price, current_bid, current_ask')
+        .eq('symbol', pos.symbol).single(),
+    ])
+
+    if (!ownerRes.data || ownerRes.data.user_id !== user.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const { data: priceRow } = await admin
-      .from('price_cache')
-      .select('current_price, current_bid, current_ask')
-      .eq('symbol', pos.symbol)
-      .single()
+    const priceRow = priceRes.data
+    console.log(`[close-position] lookup: ${Date.now() - t0}ms`)
 
     const exitPrice = pos.direction === 'long'
       ? (priceRow?.current_bid ?? priceRow?.current_price ?? Number(pos.entry_price))
@@ -274,55 +277,61 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Failed to close position. Please try again.' }, { status: 500 })
     }
 
-    // Cancel linked SL/TP orders
-    await admin
-      .from('orders')
-      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-      .eq('position_id', positionId)
-      .in('status', ['pending', 'partial'])
+    // ── PARALLEL: cancel SL/TP + fetch account + fetch instrument (all at once) ──
+    const [, acctRes, instrRes] = await Promise.all([
+      // Cancel linked SL/TP orders (fire-and-forget result)
+      admin.from('orders')
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .eq('position_id', positionId)
+        .in('status', ['pending', 'partial']),
+      // Fetch account for margin update
+      admin.from('accounts')
+        .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
+        .eq('id', pos.account_id).single(),
+      // Fetch instrument for price decimals
+      admin.from('instruments').select('price_decimals').eq('symbol', pos.symbol).single(),
+    ])
 
-    // Release margin
-    const { data: acct } = await admin
-      .from('accounts')
-      .select('available_margin, realized_pnl')
-      .eq('id', pos.account_id)
-      .single()
+    const acct = acctRes.data
+    const pDec = instrRes.data?.price_decimals ?? 2
 
-    if (acct) {
-      await admin
-        .from('accounts')
-        .update({
-          available_margin: Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee,
-          realized_pnl:     Number(acct.realized_pnl) + realizedPnl,
-          updated_at:       new Date().toISOString(),
-        })
-        .eq('id', pos.account_id)
-    }
-
-    // Equity history snapshot
-    if (acct) {
-      await admin.from('equity_history').insert({
-        account_id: pos.account_id,
-        ts:         now,
-        equity:     Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee,
-        pnl:        realizedPnl,
-      })
-    }
-
-    // Activity record
-    const { data: instr } = await admin
-      .from('instruments').select('price_decimals').eq('symbol', pos.symbol).single()
-    const pDec = instr?.price_decimals ?? 2
+    // Update account + equity history + activity in parallel
     const pnlStr = realizedPnl >= 0 ? `+$${realizedPnl.toFixed(2)}` : `-$${Math.abs(realizedPnl).toFixed(2)}`
-    await admin.from('activity').insert({
-      account_id: pos.account_id,
-      type:  'closed',
-      title: `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} closed`,
-      sub:   `${Number(pos.quantity)} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
-      ts:    now,
-      pnl:   realizedPnl,
-    })
+    const postCloseOps: PromiseLike<unknown>[] = []
 
+    if (acct) {
+      const newAvailableMargin = Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee
+      const newTotalMarginReq  = Math.max(0, Number(acct.total_margin_required) - Number(pos.isolated_margin))
+      const newRealizedPnl     = Number(acct.realized_pnl) + realizedPnl
+      const newTotalPnl        = Number(acct.total_pnl) + realizedPnl
+      const newNetWorth        = Number(acct.net_worth) + realizedPnl - closeFee
+
+      postCloseOps.push(
+        admin.from('accounts').update({
+          available_margin: newAvailableMargin, total_margin_required: newTotalMarginReq,
+          realized_pnl: newRealizedPnl, total_pnl: newTotalPnl, net_worth: newNetWorth,
+          updated_at: new Date().toISOString(),
+        }).eq('id', pos.account_id).then(),
+        admin.from('equity_history').insert({
+          account_id: pos.account_id, ts: now,
+          equity: newAvailableMargin, pnl: realizedPnl,
+        }).then(),
+      )
+    }
+
+    postCloseOps.push(
+      admin.from('activity').insert({
+        account_id: pos.account_id, type: 'closed',
+        title: `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} closed`,
+        sub: `${Number(pos.quantity)} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
+        ts: now, pnl: realizedPnl,
+      }).then()
+    )
+
+    // Run all post-close writes in parallel
+    await Promise.all(postCloseOps)
+
+    console.log(`[close-position] total: ${Date.now() - t0}ms`)
     return NextResponse.json({
       success:       true,
       position_id:   positionId,
@@ -351,7 +360,8 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     const admin = createSupabaseAdminClient()
     const positionId = body.position_id as string
 
-    const { data: pos } = await supabase
+    // Admin client bypasses RLS — manual ownership check below
+    const { data: pos } = await admin
       .from('positions')
       .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
       .eq('id', positionId)
@@ -362,11 +372,15 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Position not found or already closed' }, { status: 404 })
     }
 
-    const { data: posAccount } = await supabase
-      .from('accounts')
-      .select('id, user_id, available_margin, realized_pnl')
-      .eq('id', pos.account_id)
-      .single()
+    // Parallel: verify ownership + fetch price
+    const [posAccountRes, priceRes2] = await Promise.all([
+      admin.from('accounts').select('id, user_id, available_margin, realized_pnl')
+        .eq('id', pos.account_id).single(),
+      admin.from('price_cache').select('current_price, current_bid, current_ask')
+        .eq('symbol', pos.symbol).single(),
+    ])
+
+    const posAccount = posAccountRes.data
     if (!posAccount || posAccount.user_id !== user.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
@@ -376,11 +390,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Use close-position to close all. quantity must be less than full position size.' }, { status: 400 })
     }
 
-    const { data: priceRow } = await admin
-      .from('price_cache')
-      .select('current_price, current_bid, current_ask')
-      .eq('symbol', pos.symbol)
-      .single()
+    const priceRow = priceRes2.data
 
     const exitPrice = pos.direction === 'long'
       ? (priceRow?.current_bid ?? priceRow?.current_price ?? Number(pos.entry_price))
@@ -416,7 +426,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
     const { data: acctPartial } = await admin
       .from('accounts')
-      .select('available_margin, realized_pnl, total_margin_required')
+      .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
       .eq('id', pos.account_id)
       .single()
 
@@ -427,6 +437,8 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
           available_margin:      Number(acctPartial.available_margin) + releasedMargin + partialPnl - closeFee,
           total_margin_required: Math.max(0, Number(acctPartial.total_margin_required) - releasedMargin),
           realized_pnl:          Number(acctPartial.realized_pnl) + partialPnl,
+          total_pnl:             Number(acctPartial.total_pnl) + partialPnl,
+          net_worth:             Number(acctPartial.net_worth) + partialPnl - closeFee,
           updated_at:            new Date().toISOString(),
         })
         .eq('id', pos.account_id)
@@ -480,7 +492,8 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     const admin = createSupabaseAdminClient()
     const orderId = body.order_id as string
 
-    const { data: order } = await supabase
+    // Admin client bypasses RLS — manual ownership check below
+    const { data: order } = await admin
       .from('orders')
       .select('id, account_id, status')
       .eq('id', orderId)
@@ -491,7 +504,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Order not found or already cancelled/filled' }, { status: 404 })
     }
 
-    const { data: orderAccount } = await supabase
+    const { data: orderAccount } = await admin
       .from('accounts').select('id, user_id').eq('id', order.account_id).single()
     if (!orderAccount || orderAccount.user_id !== user.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -536,8 +549,9 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Valid wallet address required for crypto payouts' }, { status: 400 })
     }
 
-    // Verify account ownership
-    const { data: account } = await supabase
+    // Verify account ownership (admin bypasses RLS)
+    const adminPayout = createSupabaseAdminClient()
+    const { data: account } = await adminPayout
       .from('accounts')
       .select('id, user_id, realized_pnl, starting_balance, account_status')
       .eq('id', body.account_id)

@@ -62,8 +62,8 @@ export function EquityCurvePanel({ accountId, startingBalance }: EquityCurvePane
 
   if (!history || history.length < 2) {
     return (
-      <div className="flex flex-col h-full bg-card border-r border-border/50">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-border/50 shrink-0">
+      <div className="flex flex-col h-full bg-card">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-border/40 shrink-0">
           <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Equity</span>
         </div>
         <div className="flex-1 flex items-center justify-center">
@@ -108,7 +108,7 @@ export function EquityCurvePanel({ accountId, startingBalance }: EquityCurvePane
   return (
     <div className="flex flex-col h-full bg-card">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50 shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/40 shrink-0">
         <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Equity</span>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold tabular-nums text-foreground">

@@ -86,7 +86,7 @@ export function ChallengeStatusBar({ accountId }: ChallengeStatusBarProps) {
     ? 'border-profit/50 bg-profit/5'
     : status.current_drawdown > status.max_drawdown * 0.85
     ? 'border-amber-400/30 bg-amber-400/5'
-    : 'border-border/50 bg-card'
+    : 'border-border bg-card'
 
   return (
     <div className={cn(

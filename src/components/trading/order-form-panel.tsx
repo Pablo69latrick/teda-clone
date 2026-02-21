@@ -242,7 +242,7 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
 
   const showToast = (type: 'success' | 'error', msg: string) => {
     setToast({ type, msg })
-    setTimeout(() => setToast(null), 3_500)
+    setTimeout(() => setToast(null), 2_000)
   }
 
   const handlePlaceOrder = async (side: OrderSide) => {
@@ -284,14 +284,34 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
         : `${side.toUpperCase()} ${qty} ${symbol} ${effectiveOrderType} order placed`
       showToast('success', filledMsg)
 
-      // Force-revalidate all trading caches immediately
-      mutate(`/api/proxy/engine/trading-data?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/positions?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
-      mutate(`/api/proxy/engine/equity-history?account_id=${accountId}`)
-      mutate('/api/proxy/actions/accounts')
+      // Optimistic: inject data into SWR caches for instant UI update
+      const tradingDataKey = `/api/proxy/engine/trading-data?account_id=${accountId}`
+      if (order.status === 'filled') {
+        // Inject position into trading-data cache immediately (no revalidate — let the 3s interval handle it)
+        mutate(tradingDataKey, (prev: Record<string, unknown> | undefined) => {
+          if (!prev) return prev
+          const prevPositions = (prev.positions ?? []) as Record<string, unknown>[]
+          const prevAccount = prev.account as Record<string, number> | undefined
+          return {
+            ...prev,
+            positions: [...prevPositions, { ...order, unrealized_pnl: 0, original_quantity: order.quantity }],
+            account: prevAccount ? {
+              ...prevAccount,
+              available_margin: (prevAccount.available_margin ?? 0) - (order.isolated_margin ?? 0),
+              total_margin_required: (prevAccount.total_margin_required ?? 0) + (order.isolated_margin ?? 0),
+            } : prevAccount,
+          }
+        }, { revalidate: false })
+      }
+
+      // Force immediate revalidation of all related caches
+      // Using setTimeout(0) to ensure optimistic data renders first
+      setTimeout(() => {
+        mutate(tradingDataKey)
+        mutate(`/api/proxy/engine/orders?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/activity?account_id=${accountId}`)
+        mutate(`/api/proxy/engine/closed-positions?account_id=${accountId}`)
+      }, 100)
 
       setQuantity(instrument?.min_order_size?.toString() ?? '0.01')
       setLimitPrice('')

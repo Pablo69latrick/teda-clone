@@ -33,7 +33,7 @@ const ResizableHandle = ({
   <Separator
     className={cn(
       'relative flex items-center justify-center shrink-0',
-      'bg-border/30 hover:bg-border/60 transition-colors',
+      'bg-border/40 hover:bg-border/70 transition-colors',
       'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
       // horizontal separator = vertical drag bar
       'data-[orientation=horizontal]:w-1 data-[orientation=horizontal]:cursor-col-resize data-[orientation=horizontal]:h-full',

@@ -161,6 +161,41 @@
   --shimmer-gradient: linear-gradient(90deg, #0d0d0d00 0, #0d0d0d1a 20%, #2929291a 60%, #0d0d0d00);
 }
 
+/* ─────────────────────────────────────────────
+   TRADING THEME — TradingView palette
+   Applied only on the /trade page. Maps every
+   CSS variable to TradingView's professional
+   dark palette for a cohesive trading UI.
+   ───────────────────────────────────────────── */
+.dark .trading-theme,
+.trading-theme {
+  --background: #000000;
+  --foreground: #d1d4dc;
+  --card: #000000;
+  --card-foreground: #d1d4dc;
+  --popover: #0a0a0a;
+  --popover-foreground: #d1d4dc;
+  --primary: #2962ff;
+  --primary-foreground: #ffffff;
+  --secondary: #0a0a0a;
+  --secondary-foreground: #d1d4dc;
+  --muted: #0a0a0a;
+  --muted-foreground: #787b86;
+  --accent: #1a1a1a;
+  --accent-foreground: #d1d4dc;
+  --destructive: #ef5350;
+  --border: #1a1a1a;
+  --input: #1a1a1a;
+  --ring: #2962ff;
+  --profit: #26a69a;
+  --loss: #ef5350;
+  --grey: #0a0a0a;
+  --text: #787b86;
+  --fixed-card: #000000;
+  --light-dark: #050505;
+  --dark: #000000;
+}
+
 /* Dashboard theme — light mode matching VerticalProp exactly */
 /* Must override .dark which is set on <html> */
 .dark .dashboard-theme,
