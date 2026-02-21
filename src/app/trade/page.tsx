@@ -196,23 +196,6 @@ export default function TradePage() {
             {/* ── Chart + right panel — FLEX (chart resizes with panel) ──── */}
             <div className="flex-1 min-h-0 flex">
 
-              {/* Tools sidebar toggle (W) — left arrow strip */}
-              <button
-                onClick={() => setShowToolsSidebar(v => !v)}
-                className={cn(
-                  'shrink-0 w-5 h-full flex items-center justify-center',
-                  'bg-[#111] hover:bg-[#1a1a1a] border-r border-border/50',
-                  'text-[#555] hover:text-white',
-                  'transition-colors duration-200 cursor-pointer',
-                )}
-                title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
-              >
-                <ChevronLeft className={cn(
-                  'size-3 transition-transform duration-300',
-                  !showToolsSidebar && 'rotate-180',
-                )} />
-              </button>
-
               {/* CHART — fills remaining space, resizes when panel toggles */}
               <div className={cn(
                 'flex-1 min-w-0 relative',
@@ -228,6 +211,44 @@ export default function TradePage() {
                     isFullscreen={chartFullscreen}
                   />
                 </div>
+
+                {/* Tools sidebar toggle (W) — small floating button, left edge */}
+                <button
+                  onClick={() => setShowToolsSidebar(v => !v)}
+                  className={cn(
+                    'absolute top-1/2 -translate-y-1/2 left-0 z-30',
+                    'w-5 h-10 flex items-center justify-center',
+                    'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-r-md',
+                    'text-[#888] hover:text-white',
+                    'transition-all duration-300 ease-in-out',
+                    'shadow-lg shadow-black/40 cursor-pointer',
+                  )}
+                  title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
+                >
+                  <ChevronLeft className={cn(
+                    'size-3.5 transition-transform duration-300',
+                    !showToolsSidebar && 'rotate-180',
+                  )} />
+                </button>
+
+                {/* Panel toggle (A) — small floating button, right edge */}
+                <button
+                  onClick={() => setPanelOpen(v => !v)}
+                  className={cn(
+                    'absolute top-1/2 -translate-y-1/2 right-0 z-30',
+                    'w-5 h-10 flex items-center justify-center',
+                    'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
+                    'text-[#888] hover:text-white',
+                    'transition-all duration-300 ease-in-out',
+                    'shadow-lg shadow-black/40 cursor-pointer',
+                  )}
+                  title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
+                >
+                  <ChevronRight className={cn(
+                    'size-3.5 transition-transform duration-300',
+                    !panelOpen && 'rotate-180',
+                  )} />
+                </button>
               </div>
 
               {/* ─── RIGHT PANEL — flex item, chart resizes around it ────── */}
@@ -312,23 +333,6 @@ export default function TradePage() {
 
                 </div>
               </div>
-
-              {/* Panel toggle button (A) — between chart and panel */}
-              <button
-                onClick={() => setPanelOpen(v => !v)}
-                className={cn(
-                  'shrink-0 w-5 h-full flex items-center justify-center',
-                  'bg-[#111] hover:bg-[#1a1a1a] border-l border-border/50',
-                  'text-[#555] hover:text-white',
-                  'transition-colors duration-200 cursor-pointer',
-                )}
-                title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
-              >
-                <ChevronRight className={cn(
-                  'size-3 transition-transform duration-300',
-                  !panelOpen && 'rotate-180',
-                )} />
-              </button>
 
             </div>
 

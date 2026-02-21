@@ -917,12 +917,22 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
        */}
       <div
         className="relative flex flex-col bg-card border-t border-border shrink-0 transition-[height] duration-300 ease-in-out overflow-hidden"
-        style={{ height: collapsed ? '36px' : '25vh' }}
+        style={{ height: collapsed ? '64px' : '25vh' }}
       >
         {/* Toast notifications */}
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-        {/* Tabs bar — always visible, acts as the collapsed state */}
+        {/* Account Stats Bar — always visible (position 1) */}
+        <AccountStatsBar
+          balance={balance + totalRealizedPnl}
+          pnl={totalUnrealizedPnl}
+          equity={equity}
+          marginUsed={marginUsed}
+          marginAvailable={marginAvailable}
+          marginLevel={marginLevel}
+        />
+
+        {/* Tabs bar — always visible (position 2) */}
         <div className="flex items-center justify-between px-2 border-b border-border shrink-0 h-9">
           <div className="flex items-center overflow-x-auto no-scrollbar min-w-0">
             {tabs.map(tab => (
@@ -953,16 +963,6 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
 
         {/* Content area — scroll vertically + horizontally */}
         <div className="flex-1 overflow-y-auto overflow-x-auto custom-scrollbar min-h-0">
-
-          {/* Account Stats Bar */}
-          <AccountStatsBar
-            balance={balance + totalRealizedPnl}
-            pnl={totalUnrealizedPnl}
-            equity={equity}
-            marginUsed={marginUsed}
-            marginAvailable={marginAvailable}
-            marginLevel={marginLevel}
-          />
 
           {/* POSITIONS tab */}
           {activeTab === 'positions' && (
