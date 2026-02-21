@@ -96,8 +96,8 @@ export default function TradePage() {
       case 'S':
         document.querySelector<HTMLButtonElement>('[data-action="short"]')?.click()
         break
-      case 'a':
-      case 'A':
+      case 'w':
+      case 'W':
         setPanelOpen(v => !v)
         break
       case 'q':
@@ -185,29 +185,27 @@ export default function TradePage() {
         <div className="flex-1 overflow-hidden p-2 pt-1 pb-4">
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
-            {/* ── Chart + right panel — FLEX (chart resizes!) ─────────────── */}
-            <div className="flex-1 min-h-0 flex relative">
+            {/* ── Chart + right overlay ────────────────────────────────────── */}
+            <div className="flex-1 min-h-0 relative">
 
-              {/* CHART — takes all remaining space */}
+              {/* CHART — always 100% width (toolbar never moves) */}
               <div className={cn(
-                'flex-1 min-w-0 relative',
+                'absolute inset-0',
                 chartFullscreen && 'fixed inset-0 z-50',
               )}>
-                <div className="absolute inset-0">
-                  <ChartPanel
-                    symbol={selectedSymbol}
-                    timeframe={timeframe}
-                    accountId={accountId}
-                    onFullscreen={() => setChartFullscreen(v => !v)}
-                    isFullscreen={chartFullscreen}
-                  />
-                </div>
+                <ChartPanel
+                  symbol={selectedSymbol}
+                  timeframe={timeframe}
+                  accountId={accountId}
+                  onFullscreen={() => setChartFullscreen(v => !v)}
+                  isFullscreen={chartFullscreen}
+                />
               </div>
 
-              {/* ─── RIGHT PANEL — shrinks/grows, chart fills the rest ────── */}
+              {/* ─── RIGHT PANEL — overlay on top of chart canvas ─────────── */}
               <div
                 className={cn(
-                  'shrink-0 h-full',
+                  'absolute top-0 right-0 h-full z-20',
                   'bg-card border-l border-border',
                   'transition-[width] duration-300 ease-in-out overflow-hidden',
                 )}
@@ -302,7 +300,7 @@ export default function TradePage() {
                   right: panelOpen ? '280px' : '0px',
                   transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
                 }}
-                title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
+                title={panelOpen ? 'Replier le panneau (W)' : 'Ouvrir le panneau (W)'}
               >
                 <ChevronRight className={cn(
                   'size-3.5 transition-transform duration-300',
