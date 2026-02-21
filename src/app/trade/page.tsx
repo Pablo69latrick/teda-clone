@@ -19,7 +19,6 @@ const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 export default function TradePage() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTC-USD')
   const [chartFullscreen, setChartFullscreen] = useState(false)
-  const [showToolsSidebar, setShowToolsSidebar] = useState(true)
 
   // ── Overlay snap-toggle panels ────────────────────────────────────────────
   const [watchlistOpen, setWatchlistOpen] = useState(true)   // starts OPEN (left)
@@ -30,8 +29,6 @@ export default function TradePage() {
     try {
       const sym = localStorage.getItem('vp-symbol')
       if (sym) setSelectedSymbol(sym)
-      const sb = localStorage.getItem('vp-sidebar')
-      if (sb !== null) setShowToolsSidebar(sb === '1')
       const wl = localStorage.getItem('vp-watchlist')
       if (wl !== null) setWatchlistOpen(wl === '1')
       const od = localStorage.getItem('vp-order')
@@ -43,9 +40,6 @@ export default function TradePage() {
   useEffect(() => {
     try { localStorage.setItem('vp-symbol', selectedSymbol) } catch {}
   }, [selectedSymbol])
-  useEffect(() => {
-    try { localStorage.setItem('vp-sidebar', showToolsSidebar ? '1' : '0') } catch {}
-  }, [showToolsSidebar])
   useEffect(() => {
     try { localStorage.setItem('vp-watchlist', watchlistOpen ? '1' : '0') } catch {}
   }, [watchlistOpen])
@@ -68,10 +62,6 @@ export default function TradePage() {
       case 'f':
       case 'F':
         setChartFullscreen(v => !v)
-        break
-      case 'w':
-      case 'W':
-        setShowToolsSidebar(v => !v)
         break
       case 'b':
       case 'B':
@@ -151,8 +141,6 @@ export default function TradePage() {
                   accountId={accountId}
                   onFullscreen={() => setChartFullscreen(v => !v)}
                   isFullscreen={chartFullscreen}
-                  showToolsSidebar={showToolsSidebar}
-                  onToggleToolsSidebar={() => setShowToolsSidebar(v => !v)}
                 />
               </div>
 
