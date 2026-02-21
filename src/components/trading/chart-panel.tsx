@@ -16,6 +16,7 @@ import {
 } from 'lightweight-charts'
 import { cn } from '@/lib/utils'
 import { useCandles, useTradingData } from '@/lib/hooks'
+import { useLivePrice } from '@/lib/price-store'
 import {
   Maximize2, Minimize2, MousePointer, Crosshair, TrendingUp, Minus,
   ArrowRight, Triangle, Square, Ruler, Type, Camera, Trash2, ZoomIn, Timer,
@@ -86,8 +87,8 @@ export function ChartPanel({ symbol, accountId, onFullscreen, isFullscreen }: Ch
   const { data: candles } = useCandles(symbol, timeframe)
   const { data: tradingData } = useTradingData(accountId)
 
-  // Live price from SSE stream (updates every ~500ms)
-  const currentPrice = tradingData?.prices?.[symbol]
+  // Live price from external store (updates every ~500ms via SSE, no auth needed)
+  const currentPrice = useLivePrice(symbol)
 
   // Open positions for price lines
   const openPositionsForSymbol = useMemo(
@@ -253,7 +254,7 @@ export function ChartPanel({ symbol, accountId, onFullscreen, isFullscreen }: Ch
 
   // ── Real-time price update from SSE stream ────────────────────────────────
   useEffect(() => {
-    if (!currentPrice || !candleSeriesRef.current || !candles?.length) return
+    if (currentPrice <= 0 || !candleSeriesRef.current || !candles?.length) return
 
     const interval = TF_SECONDS[timeframe]
     const nowSec = Math.floor(Date.now() / 1000)
@@ -357,7 +358,7 @@ export function ChartPanel({ symbol, accountId, onFullscreen, isFullscreen }: Ch
 
   // ── Price display values ────────────────────────────────────────────────────
   const latestCandle = candles?.[candles.length - 1]
-  const livePrice = currentPrice ?? latestCandle?.close ?? 0
+  const livePrice = currentPrice > 0 ? currentPrice : (latestCandle?.close ?? 0)
   const prevClose = candles?.[candles.length - 2]?.close ?? (latestCandle?.open ?? livePrice)
   const priceChange = livePrice - prevClose
   const priceChangePct = prevClose > 0 ? (priceChange / prevClose) * 100 : 0
@@ -475,9 +476,9 @@ export function ChartPanel({ symbol, accountId, onFullscreen, isFullscreen }: Ch
             <div
               className={cn(
                 'w-1.5 h-1.5 rounded-full',
-                currentPrice ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'
+                currentPrice > 0 ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'
               )}
-              title={currentPrice ? 'Live prices' : 'Delayed prices'}
+              title={currentPrice > 0 ? 'Live prices' : 'Delayed prices'}
             />
             {onFullscreen && (
               <button

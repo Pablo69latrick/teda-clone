@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, memo } from 'react'
 import { Search, Star, Filter } from 'lucide-react'
 import { cn, formatPrice, calcSpread } from '@/lib/utils'
 import { useInstruments } from '@/lib/hooks'
+import { useLivePrices } from '@/lib/price-store'
 import type { Instrument } from '@/types'
 
 interface WatchlistPanelProps {
@@ -16,43 +17,107 @@ const FALLBACK: Instrument[] = [
   { id: 'ETH-USD', symbol: 'ETH-USD', instrument_type: 'crypto', base_currency: 'ETH', quote_currency: 'USD', margin_requirement: 0.01, min_order_size: 0.001, max_leverage: 20, tick_size: 0.01,  lot_size: 0.001, price_decimals: 2, qty_decimals: 2, is_tradable: true, is_active: true, orderbook_enabled: false, trades_enabled: false, current_price: 3450.25, current_bid: 3449.75, current_ask: 3450.75, mark_price: 3450.25, funding_rate: -0.0002, next_funding_time: 0, last_updated: 0 },
 ]
 
-// ── Price flash hook ──────────────────────────────────────────────────────────
-// Returns 'up' | 'down' | null for 600ms whenever the price changes direction.
-function usePriceFlash(price: number): 'up' | 'down' | null {
-  const prevRef = useRef<number>(price)
-  const [flash, setFlash] = useState<'up' | 'down' | null>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+// ─── TradingView-style animated price display ─────────────────────────────────
+// Shows per-digit highlighting on price changes with directional flash.
+// Changed digits get bright green/red, unchanged digits get a dimmer tint.
+// The flash fades out via CSS transition over ~300ms.
+
+function TickerPrice({ value, decimals }: { value: number; decimals: number }) {
+  const prevValueRef = useRef(value)
+  const prevStrRef = useRef(formatPrice(value, decimals))
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(null)
+
+  const [tick, setTick] = useState<{
+    dir: 'up' | 'down' | null
+    changed: Set<number>
+  }>({ dir: null, changed: new Set() })
+
+  const str = formatPrice(value, decimals)
 
   useEffect(() => {
-    if (price === prevRef.current) return
-    const dir = price > prevRef.current ? 'up' : 'down'
-    prevRef.current = price
+    if (value === prevValueRef.current) return
+
+    const dir: 'up' | 'down' = value > prevValueRef.current ? 'up' : 'down'
+    const prev = prevStrRef.current
+    const newStr = formatPrice(value, decimals)
+
+    const changed = new Set<number>()
+    for (let i = 0; i < newStr.length; i++) {
+      if (i >= prev.length || newStr[i] !== prev[i]) changed.add(i)
+    }
+
+    prevValueRef.current = value
+    prevStrRef.current = newStr
+
+    setTick({ dir, changed })
 
     if (timerRef.current) clearTimeout(timerRef.current)
-    setFlash(dir)
-    timerRef.current = setTimeout(() => setFlash(null), 600)
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [price])
+    timerRef.current = setTimeout(() => {
+      setTick({ dir: null, changed: new Set() })
+    }, 350)
 
-  return flash
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+  }, [value, decimals])
+
+  return (
+    <span
+      className={cn(
+        'inline-flex tabular-nums rounded-sm px-0.5 transition-all duration-300',
+        tick.dir === 'up'   && 'bg-profit/10',
+        tick.dir === 'down' && 'bg-loss/10',
+      )}
+    >
+      {str.split('').map((char, i) => (
+        <span
+          key={i}
+          className={cn(
+            'inline-block transition-colors',
+            tick.dir && tick.changed.has(i)
+              // Changed digits: bright color + brief pop
+              ? cn(
+                  tick.dir === 'up' ? 'text-profit' : 'text-loss',
+                  'duration-100 font-semibold'
+                )
+              // Unchanged digits during flash: dimmer tint
+              : tick.dir
+                ? cn(
+                    tick.dir === 'up' ? 'text-profit/60' : 'text-loss/60',
+                    'duration-150'
+                  )
+                // Neutral state: smooth fade back
+                : 'text-foreground duration-[400ms]'
+          )}
+        >
+          {char}
+        </span>
+      ))}
+    </span>
+  )
 }
 
-// ── Single instrument row ─────────────────────────────────────────────────────
-function InstrumentRow({
+// ─── Single instrument row ─────────────────────────────────────────────────────
+
+const InstrumentRow = memo(function InstrumentRow({
   instrument,
+  livePrice,
   isSelected,
   isBookmarked,
   onSelect,
   onToggleBookmark,
 }: {
   instrument: Instrument
+  livePrice: number
   isSelected: boolean
   isBookmarked: boolean
   onSelect: () => void
   onToggleBookmark: (e: React.MouseEvent) => void
 }) {
-  const spread = calcSpread(instrument.current_bid, instrument.current_ask, instrument.price_decimals)
-  const flash = usePriceFlash(instrument.current_price)
+  const price = livePrice > 0 ? livePrice : instrument.current_price
+  const spread = livePrice > 0
+    ? instrument.instrument_type === 'forex'
+      ? 0.00003 * 2
+      : price * 0.00015 * 2
+    : calcSpread(instrument.current_bid, instrument.current_ask, instrument.price_decimals)
 
   return (
     <button
@@ -72,15 +137,8 @@ function InstrumentRow({
 
       {/* Price + spread */}
       <div className="flex items-center gap-3">
-        <span
-          className={cn(
-            'text-xs font-medium tabular-nums rounded px-0.5 transition-colors duration-100',
-            flash === 'up'   && 'text-profit bg-profit/15',
-            flash === 'down' && 'text-loss   bg-loss/15',
-            flash === null   && 'text-foreground'
-          )}
-        >
-          ${formatPrice(instrument.current_price, instrument.price_decimals)}
+        <span className="text-xs font-medium">
+          <TickerPrice value={price} decimals={instrument.price_decimals} />
         </span>
         <span className="text-[10px] text-muted-foreground tabular-nums w-7 text-right">
           {spread.toFixed(Math.min(instrument.price_decimals, 2))}
@@ -97,15 +155,17 @@ function InstrumentRow({
       </div>
     </button>
   )
-}
+})
 
-// ── Main panel ────────────────────────────────────────────────────────────────
+// ─── Main panel ────────────────────────────────────────────────────────────────
+
 export function WatchlistPanel({ selectedSymbol, onSelectSymbol }: WatchlistPanelProps) {
   const [search, setSearch] = useState('')
   const [activeTab, setActiveTab] = useState<'watchlist' | 'all'>('all')
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set())
 
   const { data: instruments } = useInstruments()
+  const livePrices = useLivePrices()
   const list = instruments ?? FALLBACK
 
   const filtered = list.filter(i =>
@@ -215,6 +275,7 @@ export function WatchlistPanel({ selectedSymbol, onSelectSymbol }: WatchlistPane
           <InstrumentRow
             key={instrument.id}
             instrument={instrument}
+            livePrice={livePrices[instrument.symbol] ?? 0}
             isSelected={instrument.symbol === selectedSymbol}
             isBookmarked={bookmarks.has(instrument.symbol)}
             onSelect={() => onSelectSymbol(instrument.symbol)}

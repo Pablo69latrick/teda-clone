@@ -1,22 +1,21 @@
 'use client'
 
 /**
- * SSE price stream hook — connects to /api/prices/stream and writes
- * fresh prices into the SWR trading-data cache every 500ms.
+ * SSE price stream hook — connects to /api/prices/stream and distributes
+ * live prices to the entire app via three channels:
  *
- * This replaces the 3s polling for price data. Positions, orders, and
- * account data still poll via SWR but at a longer 30s interval since
- * optimistic updates handle the immediate feedback for user actions.
+ * 1. price-store  → direct external store (chart, watchlist, any component)
+ * 2. SWR instruments cache → keeps instrument objects up-to-date
+ * 3. SWR trading-data cache → keeps position PnL calculations fresh
  *
- * Features:
- * - Auto-reconnect on disconnect (2s backoff)
- * - Single connection per accountId (hook deduplicates via ref)
- * - Zero prop changes for consumers — SWR cache mutation is transparent
+ * The SSE connection is always active (no auth required).
+ * Auto-reconnects on disconnect with 2s backoff.
  */
 
 import { useEffect, useRef } from 'react'
 import { useSWRConfig } from 'swr'
-import type { TradingData } from '@/types'
+import { setPrices } from '@/lib/price-store'
+import type { TradingData, Instrument } from '@/types'
 
 export function usePriceStream(accountId: string | undefined) {
   const { mutate } = useSWRConfig()
@@ -24,8 +23,6 @@ export function usePriceStream(accountId: string | undefined) {
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (!accountId) return
-
     let closed = false
 
     function connect() {
@@ -38,17 +35,45 @@ export function usePriceStream(accountId: string | undefined) {
         try {
           const { prices } = JSON.parse(event.data) as { prices: Record<string, number> }
 
-          // Mutate the SWR cache — all components reading this key
-          // get fresh prices without an HTTP round-trip
-          const key = `/api/proxy/engine/trading-data?account_id=${accountId}`
+          // ── Channel 1: Price store (instant, no dependencies) ──────────
+          setPrices(prices)
+
+          // ── Channel 2: SWR instruments cache (watchlist spread, etc.) ──
           mutate(
-            key,
-            (current: TradingData | undefined) => {
-              if (!current) return current
-              return { ...current, prices }
+            '/api/proxy/engine/instruments',
+            (instruments: Instrument[] | undefined) => {
+              if (!instruments) return instruments
+              return instruments.map(inst => {
+                const p = prices[inst.symbol]
+                if (p === undefined) return inst
+                const spread = inst.instrument_type === 'forex'
+                  ? 0.00003
+                  : p * 0.00015
+                return {
+                  ...inst,
+                  current_price: p,
+                  current_bid:   +(p - spread).toFixed(8),
+                  current_ask:   +(p + spread).toFixed(8),
+                  mark_price:    p,
+                  last_updated:  Date.now(),
+                }
+              })
             },
             { revalidate: false }
           )
+
+          // ── Channel 3: SWR trading-data cache (positions PnL) ─────────
+          if (accountId) {
+            const key = `/api/proxy/engine/trading-data?account_id=${accountId}`
+            mutate(
+              key,
+              (current: TradingData | undefined) => {
+                if (!current) return current
+                return { ...current, prices }
+              },
+              { revalidate: false }
+            )
+          }
         } catch {
           // ignore parse errors
         }
@@ -57,7 +82,6 @@ export function usePriceStream(accountId: string | undefined) {
       es.onerror = () => {
         es.close()
         esRef.current = null
-        // Reconnect after 2s
         if (!closed) {
           reconnectRef.current = setTimeout(connect, 2000)
         }
