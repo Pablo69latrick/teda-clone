@@ -7,8 +7,9 @@
  * indicators, timeframe selector, crosshair, etc.).
  *
  * The widget is recreated only when symbol or timeframe changes.
- * The drawing-tools sidebar is toggled via CSS clip-path (L-shape mask)
- * so the top toolbar always stays in place. No reload needed.
+ * The drawing-tools sidebar is toggled via CSS margin-shift so
+ * it slides off-screen to the left (same pattern as the right panel).
+ * No widget reload needed.
  * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
  */
 
@@ -74,7 +75,7 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     wrapper.appendChild(inner)
 
     // Inject TradingView embed script with config
-    // Always create with sidebar visible — CSS clip-path handles hide/show
+    // Always create with sidebar visible — CSS margin-shift handles hide/show
     const script = document.createElement('script')
     script.type = 'text/javascript'
     script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
@@ -106,20 +107,17 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     }
   }, [symbol, timeframe])
 
-  // L-shaped clip-path: when hiding the sidebar, clip only the sidebar area
-  // (left strip below the top toolbar) while keeping the top toolbar at full width.
-  // Both states use 6 polygon points so the clip-path transition animates smoothly.
-  const clipVisible = `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 ${TV_TOP_BAR_HEIGHT}px, 0 ${TV_TOP_BAR_HEIGHT}px)`
-  const clipHidden  = `polygon(0 0, 100% 0, 100% 100%, ${TV_SIDEBAR_WIDTH}px 100%, ${TV_SIDEBAR_WIDTH}px ${TV_TOP_BAR_HEIGHT}px, 0 ${TV_TOP_BAR_HEIGHT}px)`
-
+  // CSS margin-shift: slides the entire widget left so the sidebar
+  // disappears off-screen while the chart expands to fill the space.
+  // Same sliding pattern as the right Watchlist/Orders panel.
   return (
     <div className="w-full h-full overflow-hidden" style={{ minHeight: 300 }}>
       <div
         ref={containerRef}
-        className="w-full h-full"
+        className="h-full transition-[margin-left,width] duration-300 ease-in-out"
         style={{
-          clipPath: showToolsSidebar ? clipVisible : clipHidden,
-          transition: 'clip-path 0.3s ease-in-out',
+          marginLeft: showToolsSidebar ? 0 : -TV_SIDEBAR_WIDTH,
+          width: showToolsSidebar ? '100%' : `calc(100% + ${TV_SIDEBAR_WIDTH}px)`,
         }}
       />
     </div>
