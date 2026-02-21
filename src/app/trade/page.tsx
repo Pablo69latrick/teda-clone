@@ -8,7 +8,7 @@ import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
-import { SIDEBAR_WIDTH } from '@/components/trading/trading-sidebar'
+import { SIDEBAR_WIDTH } from '@/components/trading/trading-chart'
 import { useAccounts } from '@/lib/hooks'
 import { usePriceStream } from '@/lib/use-price-stream'
 

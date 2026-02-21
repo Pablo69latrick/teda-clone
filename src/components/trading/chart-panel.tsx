@@ -3,15 +3,16 @@
 /**
  * Chart panel — TradingView Advanced Chart widget with full toolbar.
  *
- * The chart fills the entire container (always 100% width).
- * A custom floating sidebar (TradingSidebar) overlays the left edge
- * of the chart. When the sidebar toggles, the chart never moves.
+ * The timeframe can also be controlled from the right panel (trade/page.tsx)
+ * or keyboard shortcuts. Changing it recreates the widget with the new interval.
+ *
+ * The left-side drawing tools sidebar is controlled via showToolsSidebar (W key).
  */
 
 import dynamic from 'next/dynamic'
 import { Maximize2, Minimize2 } from 'lucide-react'
 
-// ── Lazy-load chart + sidebar (no SSR — inject <script> / use DOM) ──────────
+// ── Lazy-load the chart component (no SSR — injects <script> into DOM) ───────
 
 const TradingChart = dynamic(
   () => import('@/components/trading/trading-chart'),
@@ -26,11 +27,6 @@ const TradingChart = dynamic(
       </div>
     ),
   }
-)
-
-const TradingSidebar = dynamic(
-  () => import('@/components/trading/trading-sidebar'),
-  { ssr: false }
 )
 
 // ─── Props ──────────────────────────────────────────────────────────────────
@@ -55,12 +51,12 @@ export function ChartPanel({
 }: ChartPanelProps) {
   return (
     <div className="relative h-full w-full bg-[#0a0a0a] overflow-hidden">
-      {/* TradingView chart — fills entire container, ALWAYS full width */}
-      <TradingChart symbol={symbol} timeframe={timeframe} />
-
-      {/* Custom sidebar — floats OVER the chart as a fixed overlay.
-          Uses translateX for slide-in/out — the chart never moves. */}
-      <TradingSidebar open={showToolsSidebar} />
+      {/* TradingView chart — fills entire container, includes toolbar */}
+      <TradingChart
+        symbol={symbol}
+        timeframe={timeframe}
+        showToolsSidebar={showToolsSidebar}
+      />
 
       {/* Fullscreen overlay button — top-right corner, hover-reveal */}
       {onFullscreen && (
