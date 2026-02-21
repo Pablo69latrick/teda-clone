@@ -16,15 +16,7 @@
 
 import { isServerSupabaseConfigured } from '@/lib/supabase/config'
 import { getBinancePrices, FALLBACK_SYMBOLS } from '@/lib/binance-prices'
-import Decimal from 'decimal.js'
-
-/** Convert any DB value to Decimal safely. */
-function D(v: unknown): Decimal {
-  if (v === null || v === undefined) return new Decimal(0)
-  return new Decimal(String(v))
-}
-
-const FEE_RATE = new Decimal('0.0007')
+import { runRiskEngine } from '@/lib/risk-engine'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -95,155 +87,18 @@ async function writePricesToSupabase() {
   }
 }
 
-// ─── SL/TP matching engine (Supabase mode) ──────────────────────────────────
+// ─── Build bid/ask price map from Binance detailed data ─────────────────────
 
-let lastMatchingRun = 0
-
-async function runSupabaseMatchingEngine(prices: Record<string, number>) {
-  // Run every 2 seconds (not every tick — too many DB queries)
-  if (Date.now() - lastMatchingRun < 2_000) return
-  lastMatchingRun = Date.now()
-
-  try {
-    const { createSupabaseAdminClient } = await import('@/lib/supabase/server')
-    const admin = createSupabaseAdminClient()
-
-    // Fetch open positions with SL/TP orders
-    const { data: openPositions } = await admin
-      .from('positions')
-      .select('id, account_id, symbol, direction, quantity, leverage, entry_price, isolated_margin, trade_fees, status')
-      .eq('status', 'open')
-      .limit(200)
-
-    if (!openPositions || openPositions.length === 0) return
-
-    // Fetch pending SL/TP orders linked to positions
-    const { data: slTpOrders } = await admin
-      .from('orders')
-      .select('id, position_id, order_type, stop_price, price, direction, quantity, leverage')
-      .in('position_id', openPositions.map(p => p.id))
-      .in('status', ['pending'])
-
-    if (!slTpOrders || slTpOrders.length === 0) return
-
-    const now = Date.now()
-
-    for (const order of slTpOrders) {
-      const pos = openPositions.find(p => p.id === order.position_id)
-      if (!pos) continue
-
-      const currentPrice = prices[pos.symbol]
-      if (!currentPrice) continue
-
-      let triggered = false
-      let closeReason: 'sl' | 'tp' = 'sl'
-
-      if (order.order_type === 'stop' && order.stop_price) {
-        // Stop loss: long → triggers when price <= SL, short → price >= SL
-        const slPrice = Number(order.stop_price)
-        if (pos.direction === 'long' && currentPrice <= slPrice) {
-          triggered = true
-          closeReason = 'sl'
-        } else if (pos.direction === 'short' && currentPrice >= slPrice) {
-          triggered = true
-          closeReason = 'sl'
-        }
-      } else if (order.order_type === 'limit' && order.price) {
-        // Take profit: long → triggers when price >= TP, short → price <= TP
-        const tpPrice = Number(order.price)
-        if (pos.direction === 'long' && currentPrice >= tpPrice) {
-          triggered = true
-          closeReason = 'tp'
-        } else if (pos.direction === 'short' && currentPrice <= tpPrice) {
-          triggered = true
-          closeReason = 'tp'
-        }
-      }
-
-      if (!triggered) continue
-
-      // Close the position — DECIMAL.JS for all financial math
-      const exitPriceD = new Decimal(currentPrice)
-      const entryPriceD = D(pos.entry_price)
-      const quantityD = D(pos.quantity)
-      const leverageD = D(pos.leverage)
-
-      const priceDiffD = pos.direction === 'long'
-        ? exitPriceD.minus(entryPriceD)
-        : entryPriceD.minus(exitPriceD)
-      const realizedPnlD = priceDiffD.times(quantityD).times(leverageD)
-      const closeFeeD = exitPriceD.times(quantityD).times(FEE_RATE)
-
-      // Convert back to number for DB writes
-      const exitPrice = exitPriceD.toNumber()
-      const realizedPnl = realizedPnlD.toNumber()
-      const closeFee = closeFeeD.toNumber()
-
-      // Update position
-      await admin.from('positions').update({
-        status: 'closed',
-        close_reason: closeReason,
-        exit_price: exitPrice,
-        exit_timestamp: now,
-        realized_pnl: realizedPnl,
-        total_fees: D(pos.trade_fees).plus(closeFeeD).toNumber(),
-        updated_at: new Date().toISOString(),
-      }).eq('id', pos.id)
-
-      // Cancel all linked orders
-      await admin.from('orders').update({
-        status: closeReason === 'sl' ? 'filled' : 'filled',
-        updated_at: new Date().toISOString(),
-      }).eq('id', order.id)
-
-      // Cancel remaining linked orders
-      await admin.from('orders').update({
-        status: 'cancelled',
-        updated_at: new Date().toISOString(),
-      }).eq('position_id', pos.id).in('status', ['pending']).neq('id', order.id)
-
-      // Release margin + update account totals
-      const { data: acct } = await admin
-        .from('accounts')
-        .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
-        .eq('id', pos.account_id)
-        .single()
-
-      if (acct) {
-        const isolatedMarginD = D(pos.isolated_margin)
-        const newAvailableMargin = D(acct.available_margin).plus(isolatedMarginD).plus(realizedPnlD).minus(closeFeeD)
-        const newTotalMarginReq  = Decimal.max(0, D(acct.total_margin_required).minus(isolatedMarginD))
-        const newRealizedPnl     = D(acct.realized_pnl).plus(realizedPnlD)
-        const newTotalPnl        = D(acct.total_pnl).plus(realizedPnlD)
-        const newNetWorth        = D(acct.net_worth).plus(realizedPnlD).minus(closeFeeD)
-
-        await admin.from('accounts').update({
-          available_margin:      newAvailableMargin.toNumber(),
-          total_margin_required: newTotalMarginReq.toNumber(),
-          realized_pnl:          newRealizedPnl.toNumber(),
-          total_pnl:             newTotalPnl.toNumber(),
-          net_worth:             newNetWorth.toNumber(),
-          updated_at:            new Date().toISOString(),
-        }).eq('id', pos.account_id)
-      }
-
-      // Activity record
-      const pnlStr = realizedPnl >= 0 ? `+$${realizedPnl.toFixed(2)}` : `-$${Math.abs(realizedPnl).toFixed(2)}`
-      await admin.from('activity').insert({
-        account_id: pos.account_id,
-        type: 'closed',
-        title: `${closeReason === 'sl' ? '🛑 SL' : '🎯 TP'} ${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol}`,
-        sub: `${Number(pos.quantity)} @ $${exitPrice.toFixed(2)} · ${pnlStr}`,
-        ts: now,
-        pnl: realizedPnl,
-      })
-
-      console.log(`[Matching] ${closeReason.toUpperCase()} triggered: ${pos.symbol} ${pos.direction} → PnL: ${pnlStr}`)
+function buildPriceMap(manager: ReturnType<typeof getBinancePrices>): Record<string, { bid: number; ask: number; last: number }> {
+  const map: Record<string, { bid: number; ask: number; last: number }> = {}
+  for (const entry of manager.getDetailed()) {
+    map[entry.symbol] = {
+      bid: entry.current_bid,
+      ask: entry.current_ask,
+      last: entry.current_price,
     }
-  } catch (err) {
-    // Non-critical — log and continue
-    console.error('[Matching] Engine error:', err)
   }
+  return map
 }
 
 // ─── SSE Route ──────────────────────────────────────────────────────────────
@@ -280,9 +135,10 @@ export async function GET() {
             const data = `data: ${JSON.stringify({ prices, ts: Date.now(), source: 'binance' })}\n\n`
             controller.enqueue(encoder.encode(data))
 
-            // Periodically write to Supabase + run matching engine
+            // Periodically write to Supabase + run risk engine (SL/TP + margin + breach)
             await writePricesToSupabase()
-            await runSupabaseMatchingEngine(prices)
+            const detailedPriceMap = buildPriceMap(manager)
+            await runRiskEngine(detailedPriceMap)
           } catch {
             clearInterval(interval)
             try { controller.close() } catch { /* already closed */ }

@@ -19,6 +19,7 @@ const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 export default function TradePage() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTC-USD')
   const [chartFullscreen, setChartFullscreen] = useState(false)
+  const [timeframe, setTimeframe] = useState('1h')
 
   // ── Overlay snap-toggle panels ────────────────────────────────────────────
   const [watchlistOpen, setWatchlistOpen] = useState(true)   // starts OPEN (left)
@@ -33,6 +34,8 @@ export default function TradePage() {
       if (wl !== null) setWatchlistOpen(wl === '1')
       const od = localStorage.getItem('vp-order')
       if (od !== null) setOrderOpen(od === '1')
+      const tf = localStorage.getItem('vp-timeframe')
+      if (tf) setTimeframe(tf)
     } catch { /* SSR / storage unavailable */ }
   }, [])
 
@@ -46,6 +49,9 @@ export default function TradePage() {
   useEffect(() => {
     try { localStorage.setItem('vp-order', orderOpen ? '1' : '0') } catch {}
   }, [orderOpen])
+  useEffect(() => {
+    try { localStorage.setItem('vp-timeframe', timeframe) } catch {}
+  }, [timeframe])
 
   // Use the first active account from the session.
   // Falls back to the mock ID so the app still works without Supabase.
@@ -138,6 +144,7 @@ export default function TradePage() {
               )}>
                 <ChartPanel
                   symbol={selectedSymbol}
+                  timeframe={timeframe}
                   accountId={accountId}
                   onFullscreen={() => setChartFullscreen(v => !v)}
                   isFullscreen={chartFullscreen}
@@ -193,11 +200,35 @@ export default function TradePage() {
                 )}
                 style={{ width: orderOpen ? '280px' : '0px' }}
               >
-                <div className="h-full w-[280px] overflow-y-auto custom-scrollbar">
-                  <OrderFormPanel
-                    symbol={selectedSymbol}
-                    accountId={accountId}
-                  />
+                <div className="h-full w-[280px] overflow-y-auto custom-scrollbar flex flex-col">
+                  {/* ── Timeframe selector ─────────────────────────── */}
+                  <div className="shrink-0 px-3 pt-3 pb-2 border-b border-border/50">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Timeframe</div>
+                    <div className="flex gap-1">
+                      {(['1m','5m','15m','1h','4h','1d'] as const).map(tf => (
+                        <button
+                          key={tf}
+                          onClick={() => setTimeframe(tf)}
+                          className={cn(
+                            'flex-1 py-1 text-[10px] font-medium rounded transition-colors',
+                            timeframe === tf
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:text-foreground hover:bg-muted/40',
+                          )}
+                        >
+                          {tf === '1h' ? '1H' : tf === '4h' ? '4H' : tf === '1d' ? '1D' : tf}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── Order form ──────────────────────────────────── */}
+                  <div className="flex-1 min-h-0">
+                    <OrderFormPanel
+                      symbol={selectedSymbol}
+                      accountId={accountId}
+                    />
+                  </div>
                 </div>
               </div>
 
