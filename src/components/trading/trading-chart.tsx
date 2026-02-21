@@ -6,7 +6,8 @@
  * Renders TradingView's full chart with toolbar (drawing tools,
  * indicators, timeframe selector, crosshair, etc.).
  *
- * The widget is recreated when symbol, timeframe, or showToolsSidebar changes.
+ * The widget is recreated only when symbol or timeframe changes.
+ * The drawing-tools sidebar is toggled via CSS shift (no reload).
  * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
  */
 
@@ -40,11 +41,15 @@ const TV_INTERVALS: Record<string, string> = {
   '1d':  'D',
 }
 
+// ─── TradingView left-side drawing tools sidebar width (px) ─────────────────
+const TV_SIDEBAR_WIDTH = 53
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // Widget is only recreated when symbol or timeframe changes — NOT showToolsSidebar
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -65,6 +70,7 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     wrapper.appendChild(inner)
 
     // Inject TradingView embed script with config
+    // Always create with sidebar visible — CSS handles hide/show
     const script = document.createElement('script')
     script.type = 'text/javascript'
     script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
@@ -78,14 +84,14 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
       style: '1',
       locale: 'fr',
       backgroundColor: 'rgba(10, 10, 10, 1)',
-      gridColor: 'rgba(26, 26, 46, 0.6)',
+      gridColor: 'rgba(10, 10, 10, 0)',
       hide_top_toolbar: false,
       hide_legend: false,
-      hide_side_toolbar: !showToolsSidebar,
+      hide_side_toolbar: false,
       allow_symbol_change: false,
       save_image: false,
       calendar: false,
-      hide_volume: false,
+      hide_volume: true,
       support_host: 'https://www.tradingview.com',
     })
     wrapper.appendChild(script)
@@ -94,14 +100,21 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     return () => {
       container.innerHTML = ''
     }
-  }, [symbol, timeframe, showToolsSidebar])
+  }, [symbol, timeframe])
 
+  // CSS-based sidebar toggle: shift the widget left to hide the sidebar,
+  // expand width to compensate — no widget reload needed
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-full"
-      style={{ minHeight: 300 }}
-    />
+    <div className="w-full h-full overflow-hidden" style={{ minHeight: 300 }}>
+      <div
+        ref={containerRef}
+        className="h-full transition-all duration-300 ease-in-out"
+        style={{
+          marginLeft: showToolsSidebar ? 0 : -TV_SIDEBAR_WIDTH,
+          width: showToolsSidebar ? '100%' : `calc(100% + ${TV_SIDEBAR_WIDTH}px)`,
+        }}
+      />
+    </div>
   )
 }
 
