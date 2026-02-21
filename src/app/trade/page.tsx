@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronRight, Monitor, BarChart3, ShoppingCart } from 'lucide-react'
+import { ChevronRight, Monitor, BarChart3, ShoppingCart, PenTool } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
@@ -20,9 +20,7 @@ type Timeframe = typeof TIMEFRAMES[number]
 /** Resolve a keyboard buffer like "1", "5", "15", "1h", "4h", "1d" to a valid timeframe */
 function resolveTimeframe(buf: string): Timeframe | null {
   const b = buf.toLowerCase().trim()
-  // Exact match first
   if ((TIMEFRAMES as readonly string[]).includes(b)) return b as Timeframe
-  // Bare number → assume minutes  (1→1m, 5→5m, 15→15m)
   if (/^\d+$/.test(b)) {
     const candidate = `${b}m`
     if ((TIMEFRAMES as readonly string[]).includes(candidate)) return candidate as Timeframe
@@ -131,7 +129,6 @@ export default function TradePage() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
       // ── Timeframe buffer input ──────────────────────────────────────────
-      // Digits + h/d/m feed the buffer; Enter confirms; Escape clears
       const isDigit   = /^[0-9]$/.test(e.key)
       const isTfChar  = /^[hdmHDM]$/.test(e.key)
 
@@ -139,7 +136,6 @@ export default function TradePage() {
         e.preventDefault()
         setTfBuffer(prev => {
           const next = prev + e.key.toLowerCase()
-          // Auto-clear timeout — reset on each keystroke
           if (tfTimeout.current) clearTimeout(tfTimeout.current)
           tfTimeout.current = setTimeout(() => setTfBuffer(''), 2000)
           return next
@@ -197,28 +193,46 @@ export default function TradePage() {
         <div className="flex-1 overflow-hidden p-2 pt-1 pb-4">
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
-            {/* ── Chart + right overlay ────────────────────────────────────── */}
-            <div className="flex-1 min-h-0 relative">
+            {/* ── Chart + right panel — FLEX (chart resizes with panel) ──── */}
+            <div className="flex-1 min-h-0 flex">
 
-              {/* CHART — always 100% width (toolbar never moves) */}
+              {/* CHART — fills remaining space, resizes when panel toggles */}
               <div className={cn(
-                'absolute inset-0',
+                'flex-1 min-w-0 relative',
                 chartFullscreen && 'fixed inset-0 z-50',
               )}>
-                <ChartPanel
-                  symbol={selectedSymbol}
-                  timeframe={timeframe}
-                  showToolsSidebar={showToolsSidebar}
-                  accountId={accountId}
-                  onFullscreen={() => setChartFullscreen(v => !v)}
-                  isFullscreen={chartFullscreen}
-                />
+                <div className="absolute inset-0">
+                  <ChartPanel
+                    symbol={selectedSymbol}
+                    timeframe={timeframe}
+                    showToolsSidebar={showToolsSidebar}
+                    accountId={accountId}
+                    onFullscreen={() => setChartFullscreen(v => !v)}
+                    isFullscreen={chartFullscreen}
+                  />
+                </div>
+
+                {/* ── Tools sidebar toggle (W) — top-left, always visible ── */}
+                <button
+                  onClick={() => setShowToolsSidebar(v => !v)}
+                  className={cn(
+                    'absolute top-2 left-2 z-30',
+                    'p-1.5 rounded',
+                    'transition-all duration-200',
+                    showToolsSidebar
+                      ? 'text-primary bg-primary/10 hover:bg-primary/20'
+                      : 'text-[#787b86]/60 hover:text-[#787b86] hover:bg-[#2a2e39]/80',
+                  )}
+                  title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
+                >
+                  <PenTool className="size-3.5" />
+                </button>
               </div>
 
-              {/* ─── RIGHT PANEL — overlay on top of chart canvas ─────────── */}
+              {/* ─── RIGHT PANEL — flex item, chart resizes around it ────── */}
               <div
                 className={cn(
-                  'absolute top-0 right-0 h-full z-20',
+                  'shrink-0 h-full',
                   'bg-card border-l border-border',
                   'transition-[width] duration-300 ease-in-out overflow-hidden',
                 )}
@@ -298,25 +312,19 @@ export default function TradePage() {
                 </div>
               </div>
 
-              {/* Panel toggle button — right edge of chart */}
+              {/* Panel toggle button (A) — between chart and panel */}
               <button
                 onClick={() => setPanelOpen(v => !v)}
                 className={cn(
-                  'absolute top-1/2 -translate-y-1/2 z-30',
-                  'w-5 h-10 flex items-center justify-center',
-                  'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
-                  'text-[#888] hover:text-white',
-                  'transition-all duration-300 ease-in-out',
-                  'shadow-lg shadow-black/40 cursor-pointer',
+                  'shrink-0 w-5 h-full flex items-center justify-center',
+                  'bg-[#111] hover:bg-[#1a1a1a] border-l border-border/50',
+                  'text-[#555] hover:text-white',
+                  'transition-colors duration-200 cursor-pointer',
                 )}
-                style={{
-                  right: panelOpen ? '280px' : '0px',
-                  transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
-                }}
                 title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
               >
                 <ChevronRight className={cn(
-                  'size-3.5 transition-transform duration-300',
+                  'size-3 transition-transform duration-300',
                   !panelOpen && 'rotate-180',
                 )} />
               </button>
