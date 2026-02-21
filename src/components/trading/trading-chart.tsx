@@ -78,7 +78,12 @@ function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartP
 
     function init() {
       if (!mounted || !containerRef.current || widgetRef.current) return
-      if (!window.TradingView?.widget) return
+      if (!window.TradingView?.widget) {
+        console.error('[TV] window.TradingView.widget not found after script load')
+        return
+      }
+
+      console.log('[TV] Initializing widget…')
 
       widgetRef.current = new window.TradingView.widget({
         container: containerRef.current,
@@ -120,10 +125,13 @@ function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartP
           'paneProperties.vertGridProperties.color': 'rgba(10,10,10,0)',
           'paneProperties.horzGridProperties.color': 'rgba(10,10,10,0)',
         },
+
+        loading_screen: { backgroundColor: '#0a0a0a' },
       })
 
       widgetRef.current.onChartReady(() => {
         if (!mounted) return
+        console.log('[TV] ✅ Chart ready')
         readyRef.current = true
 
         // Sync with current props (they may have changed while widget loaded)
@@ -141,7 +149,8 @@ function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartP
       s.id     = SCRIPT_ID
       s.src    = 'https://s3.tradingview.com/tv.js'
       s.async  = true
-      s.onload = init
+      s.onload = () => { console.log('[TV] Script loaded'); init() }
+      s.onerror = () => console.error('[TV] ❌ Failed to load tv.js')
       document.head.appendChild(s)
     } else if (window.TradingView?.widget) {
       init()
@@ -173,7 +182,20 @@ function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartP
     }
   }, [timeframe])
 
-  return <div ref={containerRef} className="w-full h-full" style={{ minHeight: 300 }} />
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: '100%',
+        height: '100%',
+      }}
+    />
+  )
 }
 
 export default memo(TradingChart)

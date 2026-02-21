@@ -78,7 +78,7 @@ export function ChartPanel({
   return (
     <div className="h-full w-full bg-[#0a0a0a] overflow-hidden flex flex-col">
       {/* ── Chart area — TradingView widget with native toolbar + sidebar ── */}
-      <div className="flex-1 min-h-0 relative overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden" style={{ position: 'relative', minHeight: '400px' }}>
         <TradingChart
           symbol={symbol}
           timeframe={timeframe}
