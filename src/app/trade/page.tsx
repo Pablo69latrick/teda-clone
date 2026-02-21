@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronRight, Monitor, BarChart3, ShoppingCart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
@@ -15,17 +15,35 @@ import { usePriceStream } from '@/lib/use-price-stream'
 const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
+type Timeframe = typeof TIMEFRAMES[number]
+
+/** Resolve a keyboard buffer like "1", "5", "15", "1h", "4h", "1d" to a valid timeframe */
+function resolveTimeframe(buf: string): Timeframe | null {
+  const b = buf.toLowerCase().trim()
+  // Exact match first
+  if ((TIMEFRAMES as readonly string[]).includes(b)) return b as Timeframe
+  // Bare number → assume minutes  (1→1m, 5→5m, 15→15m)
+  if (/^\d+$/.test(b)) {
+    const candidate = `${b}m`
+    if ((TIMEFRAMES as readonly string[]).includes(candidate)) return candidate as Timeframe
+  }
+  return null
+}
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function TradePage() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTC-USD')
   const [chartFullscreen, setChartFullscreen] = useState(false)
-  const [timeframe, setTimeframe] = useState('1h')
+  const [timeframe, setTimeframe] = useState<string>('1h')
 
   // ── Right panel state ───────────────────────────────────────────────────────
-  const [panelOpen, setPanelOpen] = useState(true)                         // starts OPEN
+  const [panelOpen, setPanelOpen] = useState(true)
   const [activeTab, setActiveTab] = useState<'watchlist' | 'orders'>('watchlist')
+
+  // ── Timeframe keyboard buffer ───────────────────────────────────────────────
+  const [tfBuffer, setTfBuffer] = useState('')
+  const tfTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ── Restore persisted preferences from localStorage ───────────────────────
   useEffect(() => {
@@ -56,12 +74,11 @@ export default function TradePage() {
   }, [timeframe])
 
   // Use the first active account from the session.
-  // Falls back to the mock ID so the app still works without Supabase.
   const { data: accounts } = useAccounts()
   const account     = accounts?.[0]
   const accountId   = account?.id ?? MOCK_ACCOUNT_ID
 
-  // Connect SSE price stream — pushes live prices into SWR cache every 500ms
+  // Connect SSE price stream
   usePriceStream(accountId)
 
   // ── Macro key handler (shared between keydown + postMessage) ─────────────
@@ -85,12 +102,12 @@ export default function TradePage() {
         break
       case 'q':
       case 'Q':
-        // Switch tab (and open panel if closed)
         setActiveTab(v => v === 'watchlist' ? 'orders' : 'watchlist')
         setPanelOpen(true)
         break
       case 'Escape':
         setChartFullscreen(false)
+        setTfBuffer('')
         break
     }
   }, [])
@@ -100,11 +117,41 @@ export default function TradePage() {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      handleMacroKey(e.key)
+
+      // ── Timeframe buffer input ──────────────────────────────────────────
+      // Digits + h/d/m feed the buffer; Enter confirms; Escape clears
+      const isDigit   = /^[0-9]$/.test(e.key)
+      const isTfChar  = /^[hdmHDM]$/.test(e.key)
+
+      if (isDigit || isTfChar) {
+        e.preventDefault()
+        setTfBuffer(prev => {
+          const next = prev + e.key.toLowerCase()
+          // Auto-clear timeout — reset on each keystroke
+          if (tfTimeout.current) clearTimeout(tfTimeout.current)
+          tfTimeout.current = setTimeout(() => setTfBuffer(''), 2000)
+          return next
+        })
+        return
+      }
+
+      if (e.key === 'Enter' && tfBuffer) {
+        e.preventDefault()
+        const resolved = resolveTimeframe(tfBuffer)
+        if (resolved) setTimeframe(resolved)
+        setTfBuffer('')
+        if (tfTimeout.current) clearTimeout(tfTimeout.current)
+        return
+      }
+
+      // ── Regular macro keys (only when buffer is empty) ──────────────────
+      if (!tfBuffer) {
+        handleMacroKey(e.key)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleMacroKey])
+  }, [handleMacroKey, tfBuffer])
 
   // ── PostMessage from TradingView iframes ─────────────────────────────────
   useEffect(() => {
@@ -131,34 +178,36 @@ export default function TradePage() {
 
       {/* ── Desktop layout ─────────────────────────────────────────────────── */}
       <div className="h-full w-full overflow-hidden flex flex-col max-sm:hidden bg-background">
-        {/* ── Challenge status bar (CRM wire) ──────────────────────────────── */}
+        {/* ── Challenge status bar ────────────────────────────────────────── */}
         <ChallengeStatusBar accountId={accountId} />
 
         {/* ── Main trading layout ─────────────────────────────────────────── */}
         <div className="flex-1 overflow-hidden p-2 pt-1 pb-4">
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
-            {/* ── Chart + right overlay container ──────────────────────────── */}
-            <div className="flex-1 min-h-0 relative">
+            {/* ── Chart + right panel — FLEX (chart resizes!) ─────────────── */}
+            <div className="flex-1 min-h-0 flex relative">
 
-              {/* CHART — always 100% underneath */}
+              {/* CHART — takes all remaining space */}
               <div className={cn(
-                'absolute inset-0',
+                'flex-1 min-w-0 relative',
                 chartFullscreen && 'fixed inset-0 z-50',
               )}>
-                <ChartPanel
-                  symbol={selectedSymbol}
-                  timeframe={timeframe}
-                  accountId={accountId}
-                  onFullscreen={() => setChartFullscreen(v => !v)}
-                  isFullscreen={chartFullscreen}
-                />
+                <div className="absolute inset-0">
+                  <ChartPanel
+                    symbol={selectedSymbol}
+                    timeframe={timeframe}
+                    accountId={accountId}
+                    onFullscreen={() => setChartFullscreen(v => !v)}
+                    isFullscreen={chartFullscreen}
+                  />
+                </div>
               </div>
 
-              {/* ─── RIGHT PANEL overlay ────────────────────────────────────── */}
+              {/* ─── RIGHT PANEL — shrinks/grows, chart fills the rest ────── */}
               <div
                 className={cn(
-                  'absolute top-0 right-0 h-full z-20',
+                  'shrink-0 h-full',
                   'bg-card border-l border-border',
                   'transition-[width] duration-300 ease-in-out overflow-hidden',
                 )}
@@ -166,7 +215,7 @@ export default function TradePage() {
               >
                 <div className="h-full w-[280px] flex flex-col">
 
-                  {/* ── Timeframe selector ─────────────────────────────────── */}
+                  {/* ── Timeframe selector ───────────────────────────────── */}
                   <div className="shrink-0 px-3 pt-3 pb-2 border-b border-border/50">
                     <div className="flex gap-1">
                       {TIMEFRAMES.map(tf => (
@@ -186,7 +235,7 @@ export default function TradePage() {
                     </div>
                   </div>
 
-                  {/* ── Tab toggle: Watchlist / Orders ─────────────────────── */}
+                  {/* ── Tab toggle: Watchlist / Orders ───────────────────── */}
                   <div className="shrink-0 flex border-b border-border/50">
                     <button
                       onClick={() => setActiveTab('watchlist')}
@@ -220,7 +269,7 @@ export default function TradePage() {
                     </button>
                   </div>
 
-                  {/* ── Tab content ────────────────────────────────────────── */}
+                  {/* ── Tab content ──────────────────────────────────────── */}
                   <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                     {activeTab === 'watchlist' ? (
                       <WatchlistPanel
@@ -238,7 +287,7 @@ export default function TradePage() {
                 </div>
               </div>
 
-              {/* Panel toggle button — right edge */}
+              {/* Panel toggle button — right edge of chart */}
               <button
                 onClick={() => setPanelOpen(v => !v)}
                 className={cn(
@@ -268,6 +317,21 @@ export default function TradePage() {
           </div>
         </div>
       </div>
+
+      {/* ── Timeframe keyboard HUD ─────────────────────────────────────────── */}
+      {tfBuffer && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] pointer-events-none animate-in fade-in duration-150">
+          <div className="bg-[#1a1a1a]/95 border border-[#333] rounded-lg px-4 py-2 shadow-2xl shadow-black/60 flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Timeframe</span>
+            <span className="text-sm font-mono font-bold text-white tracking-wide">
+              {tfBuffer}
+            </span>
+            <span className="text-[10px] text-muted-foreground">
+              {resolveTimeframe(tfBuffer) ? '↵' : '...'}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
