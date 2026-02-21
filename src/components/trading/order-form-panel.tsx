@@ -276,7 +276,7 @@ export function OrderFormPanel({ symbol, accountId }: OrderFormPanelProps) {
       })
       if (!res.ok) {
         const errJson = await res.json().catch(() => null)
-        throw new Error(errJson?.message ?? `Order rejected (${res.status})`)
+        throw new Error(errJson?.error ?? errJson?.message ?? `Order rejected (${res.status})`)
       }
       const order = await res.json()
       const filledMsg = order.status === 'filled'

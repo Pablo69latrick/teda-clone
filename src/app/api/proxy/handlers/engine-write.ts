@@ -25,6 +25,10 @@ import {
 
 const FEE_RATE = new Decimal('0.0007')        // 0.07 % per side
 const PROFIT_SPLIT = new Decimal('0.80')       // 80 % profit split for payouts
+const MAX_POSITIONS = 15                       // max open positions per account
+const MAX_PER_INSTRUMENT = 4                   // max positions per symbol
+const DAILY_DRAWDOWN_PCT = new Decimal('0.05') // 5 % daily loss limit
+const PRICE_STALE_MS = 30_000                  // 30 s — reject if price older
 
 // ─── Decimal helpers ───────────────────────────────────────────────────────
 
@@ -58,19 +62,38 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
     const admin = createSupabaseAdminClient()
 
-    // ── Parallel DB queries (account + instrument + price in one round-trip) ──
-    const [accountRes, instrumentRes, priceRes] = await Promise.all([
-      admin.from('accounts').select('id, user_id, is_active, available_margin, starting_balance, net_worth, realized_pnl, account_status')
+    // Today midnight UTC — for daily drawdown calculation
+    const todayStart = new Date()
+    todayStart.setUTCHours(0, 0, 0, 0)
+    const todayStartMs = todayStart.getTime()
+    const todayDateStr = todayStart.toISOString().slice(0, 10) // '2026-02-21'
+
+    // ── Parallel DB queries (6 queries in one round-trip) ───────────────────
+    // Query 6 (dayStartRes) fetches day_start_* columns — fails gracefully
+    // if the migration hasn't been run yet. All 6 resolve (Supabase never rejects).
+    const [accountRes, instrumentRes, priceRes, openPosRes, todayClosedRes, dayStartRes] = await Promise.all([
+      admin.from('accounts').select('id, user_id, is_active, available_margin, starting_balance, net_worth, realized_pnl, account_status, total_margin_required')
         .eq('id', input.account_id).single(),
       admin.from('instruments').select('price_decimals, qty_decimals, max_leverage, min_order_size, margin_requirement')
         .eq('symbol', input.symbol).eq('is_active', true).single(),
-      admin.from('price_cache').select('current_price, current_bid, current_ask, mark_price')
+      admin.from('price_cache').select('current_price, current_bid, current_ask, mark_price, last_updated')
         .eq('symbol', input.symbol).single(),
+      admin.from('positions').select('id, symbol, entry_price, quantity, leverage, direction')
+        .eq('account_id', input.account_id).eq('status', 'open'),
+      admin.from('positions').select('realized_pnl, total_fees')
+        .eq('account_id', input.account_id).eq('status', 'closed')
+        .gte('exit_timestamp', todayStartMs),
+      // Graceful: returns { data: null, error } if columns don't exist
+      admin.from('accounts').select('day_start_balance, day_start_equity, day_start_date')
+        .eq('id', input.account_id).single(),
     ])
 
     const account    = accountRes.data
     const instrument = instrumentRes.data
     const priceRow   = priceRes.data
+    const openPositions = openPosRes.data ?? []
+    const todayClosed   = todayClosedRes.data ?? []
+    const dayStart      = dayStartRes.error ? null : dayStartRes.data  // null if migration not run
 
     // Validate account ownership
     if (!account || !account.is_active) {
@@ -105,6 +128,32 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'No price available for this symbol' }, { status: 422 })
     }
 
+    // ── PRICE STALENESS CHECK (>30s = market may be closed) ──────────────
+    if (priceRow?.last_updated) {
+      const lastUpdate = typeof priceRow.last_updated === 'number'
+        ? priceRow.last_updated
+        : new Date(priceRow.last_updated).getTime()
+      const ageMs = Date.now() - lastUpdate
+      if (ageMs > PRICE_STALE_MS) {
+        return NextResponse.json({
+          error: `Price data is stale (${(ageMs / 1000).toFixed(0)}s old). Market may be closed.`
+        }, { status: 422 })
+      }
+    }
+
+    // ── POSITION LIMITS ─────────────────────────────────────────────────
+    if (openPositions.length >= MAX_POSITIONS) {
+      return NextResponse.json({
+        error: `Maximum ${MAX_POSITIONS} open positions reached (current: ${openPositions.length}).`
+      }, { status: 422 })
+    }
+    const sameSymbolCount = openPositions.filter(p => p.symbol === input.symbol).length
+    if (sameSymbolCount >= MAX_PER_INSTRUMENT) {
+      return NextResponse.json({
+        error: `Maximum ${MAX_PER_INSTRUMENT} positions per instrument reached for ${input.symbol} (current: ${sameSymbolCount}).`
+      }, { status: 422 })
+    }
+
     // ── DECIMAL.JS FINANCIAL MATH ──────────────────────────────────────────
     const notional = execPrice.times(qty)
     const margin   = notional.div(lev)
@@ -117,23 +166,112 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       }, { status: 422 })
     }
 
-    // ── PRE-TRADE RISK CHECK (drawdown + daily loss) ───────────────────────
+    // ── COMMISSION BALANCE CHECK ─────────────────────────────────────────
+    const remainingAfterMargin = availableMargin.minus(margin)
+    if (fee.gt(remainingAfterMargin)) {
+      return NextResponse.json({
+        error: `Insufficient balance to cover commission ($${fee.toFixed(2)}). Available after margin: $${remainingAfterMargin.toFixed(2)}`
+      }, { status: 422 })
+    }
+
+    // ── PRE-TRADE RISK CHECK (max drawdown + daily drawdown) ────────────────
     if (account.account_status !== 'breached') {
       const startingBalance = D(account.starting_balance ?? account.net_worth)
       const netWorth = D(account.net_worth)
 
-      // Max drawdown check
+      // ─── Compute unrealized PnL from all open positions ───────────────
+      // Fetch prices for all open-position symbols in one batch
+      const uniqueSymbols = [...new Set(openPositions.map(p => p.symbol))]
+      const priceMap = new Map<string, { bid: Decimal; ask: Decimal }>()
+      // Current symbol already in priceRow
+      if (priceRow) {
+        priceMap.set(input.symbol, {
+          bid: D(priceRow.current_bid ?? priceRow.current_price),
+          ask: D(priceRow.current_ask ?? priceRow.current_price),
+        })
+      }
+      // Fetch any additional symbols we don't have yet
+      const missingSymbols = uniqueSymbols.filter(s => !priceMap.has(s))
+      if (missingSymbols.length > 0) {
+        const { data: extraPrices } = await admin.from('price_cache')
+          .select('symbol, current_price, current_bid, current_ask')
+          .in('symbol', missingSymbols)
+        for (const p of extraPrices ?? []) {
+          priceMap.set(p.symbol, {
+            bid: D(p.current_bid ?? p.current_price),
+            ask: D(p.current_ask ?? p.current_price),
+          })
+        }
+      }
+
+      let totalUnrealizedPnl = new Decimal(0)
+      for (const pos of openPositions) {
+        const prices = priceMap.get(pos.symbol)
+        if (!prices) continue
+        const entry = D(pos.entry_price)
+        const exit  = pos.direction === 'long' ? prices.bid : prices.ask
+        const diff  = pos.direction === 'long' ? exit.minus(entry) : entry.minus(exit)
+        totalUnrealizedPnl = totalUnrealizedPnl.plus(diff.times(D(pos.quantity)).times(D(pos.leverage)))
+      }
+
+      const currentEquity = netWorth.plus(totalUnrealizedPnl)
+
+      // ─── Max drawdown check (10% of starting balance) ─────────────────
       if (startingBalance.gt(0)) {
-        const drawdownPct = startingBalance.minus(netWorth).div(startingBalance)
-        if (drawdownPct.gte(0.10)) { // 10% max drawdown
+        const drawdownPct = startingBalance.minus(currentEquity).div(startingBalance)
+        if (drawdownPct.gte(0.10)) {
           return NextResponse.json({
             error: `Max drawdown reached (${drawdownPct.times(100).toFixed(2)}%). Trading suspended.`
           }, { status: 422 })
         }
       }
 
-      // Daily loss check (quick estimate: if remaining daily budget < margin, warn)
-      // Full daily loss check happens in challenge-status endpoint with position-level PnL
+      // ─── Daily drawdown check (5%) — equity-based with auto daily reset ─
+      if (dayStart) {
+        // ── Migration applied → use day_start columns ──────────────────
+        const needsReset = dayStart.day_start_date !== todayDateStr
+
+        if (needsReset) {
+          // First request of the new trading day → snapshot current values
+          // Fire-and-forget: don't block the order on this write
+          admin.from('accounts').update({
+            day_start_balance: netWorth.toNumber(),
+            day_start_equity:  currentEquity.toNumber(),
+            day_start_date:    todayDateStr,
+          }).eq('id', input.account_id).then(() => {
+            console.log(`[orders] daily reset for account ${input.account_id} → date=${todayDateStr}`)
+          })
+          // After reset, today's drawdown is 0 → skip check
+        } else {
+          // Same day — enforce daily drawdown
+          const dayStartBal = D(dayStart.day_start_balance)
+          const dayStartEq  = D(dayStart.day_start_equity)
+          const dailyBase   = Decimal.max(dayStartBal, dayStartEq)
+
+          if (dailyBase.gt(0)) {
+            const dailyFloor    = dailyBase.times(new Decimal(1).minus(DAILY_DRAWDOWN_PCT))
+            if (currentEquity.lte(dailyFloor)) {
+              const dailyLossPct = dailyBase.minus(currentEquity).div(dailyBase).times(100)
+              return NextResponse.json({
+                error: `Daily drawdown limit reached (${dailyLossPct.toFixed(2)}% loss today, max ${DAILY_DRAWDOWN_PCT.times(100)}%). Equity: $${currentEquity.toFixed(2)}, Floor: $${dailyFloor.toFixed(2)}.`
+              }, { status: 422 })
+            }
+          }
+        }
+      } else {
+        // ── Fallback: migration not applied → sum today's closed PnL ───
+        const todayRealizedLoss = todayClosed.reduce(
+          (sum, p) => sum.plus(D(p.realized_pnl)),
+          new Decimal(0)
+        )
+        const dailyLossLimit = startingBalance.times(DAILY_DRAWDOWN_PCT)
+        if (todayRealizedLoss.isNeg() && todayRealizedLoss.abs().gte(dailyLossLimit)) {
+          const dailyLossPct = todayRealizedLoss.abs().div(startingBalance).times(100)
+          return NextResponse.json({
+            error: `Daily drawdown limit reached (${dailyLossPct.toFixed(2)}% loss today, max ${DAILY_DRAWDOWN_PCT.times(100)}%). Trading suspended until tomorrow.`
+          }, { status: 422 })
+        }
+      }
     }
 
     const liqPct = new Decimal(1).div(lev)
