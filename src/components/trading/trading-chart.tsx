@@ -87,7 +87,7 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
       locale: 'fr',
       backgroundColor: 'rgba(10, 10, 10, 1)',
       gridColor: 'rgba(10, 10, 10, 0)',
-      hide_top_toolbar: false,
+      hide_top_toolbar: true,
       hide_legend: false,
       hide_side_toolbar: false,
       allow_symbol_change: false,

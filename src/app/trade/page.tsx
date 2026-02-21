@@ -207,6 +207,7 @@ export default function TradePage() {
                     symbol={selectedSymbol}
                     timeframe={timeframe}
                     showToolsSidebar={showToolsSidebar}
+                    onTimeframeChange={setTimeframe}
                     accountId={accountId}
                     onFullscreen={() => setChartFullscreen(v => !v)}
                     isFullscreen={chartFullscreen}
