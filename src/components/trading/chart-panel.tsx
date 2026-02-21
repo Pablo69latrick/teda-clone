@@ -1,11 +1,11 @@
 'use client'
 
 /**
- * Chart Panel — composes the TradingView integration from 3 independent blocks:
+ * Chart Panel — composes the TradingView integration from 3 blocks:
  *
  * ┌─────────────────────────────────────────────────┐
- * │  BLOCK 2: TradingHeaderBar                      │  ← trading-header-bar.tsx
- * │  Timeframes · Indicateurs · Screenshot · FS     │
+ * │  BLOCK 2: TradingView native header (iframe)    │  ← inside trading-chart iframe
+ * │  Timeframes · Indicateurs · Chart type · Screenshot │
  * ├───┬─────────────────────────────────────────────┤
  * │ B │                                             │
  * │ L │         TradingView Advanced Chart          │  ← trading-chart.tsx (iframe)
@@ -20,12 +20,15 @@
  * └─────────────────────────────────────────────────┘
  *
  * BLOCK 1: TradingToolbar (sidebar) floats as an overlay on the left edge.
+ * BLOCK 2: TradingView's native header — configured via hide_top_toolbar:false
+ *          in trading-chart.tsx. Rendered inside the iframe, NOT a React component.
+ * BLOCK 3: TradingStatusBar — our own component below the chart.
  *
- * Each block is a separate component file — modify independently.
+ * Each block maps to a separate file for independent modifications.
  */
 
 import dynamic from 'next/dynamic'
-import { TradingHeaderBar } from './trading-header-bar'
+import { Maximize2, Minimize2 } from 'lucide-react'
 import { TradingToolbar } from './trading-toolbar'
 import { TradingStatusBar } from './trading-status-bar'
 
@@ -51,7 +54,6 @@ const TradingChart = dynamic(
 interface ChartPanelProps {
   symbol: string
   timeframe: string
-  onTimeframeChange: (tf: string) => void
   showToolsSidebar?: boolean
   onToggleToolsSidebar?: () => void
   onFullscreen?: () => void
@@ -63,7 +65,6 @@ interface ChartPanelProps {
 export function ChartPanel({
   symbol,
   timeframe,
-  onTimeframeChange,
   showToolsSidebar = true,
   onToggleToolsSidebar,
   onFullscreen,
@@ -72,18 +73,10 @@ export function ChartPanel({
   return (
     <div className="h-full w-full bg-[#0a0a0a] overflow-hidden flex flex-col">
 
-      {/* ── BLOCK 2: Header bar (timeframes, indicators, screenshot, fullscreen) ── */}
-      <TradingHeaderBar
-        timeframe={timeframe}
-        onTimeframeChange={onTimeframeChange}
-        onFullscreen={onFullscreen}
-        isFullscreen={isFullscreen}
-      />
-
-      {/* ── Chart area — iframe + sidebar overlay ──────────────────────────── */}
+      {/* ── BLOCK 2 (native TradingView header) + Chart + BLOCK 1 (sidebar) ── */}
       <div className="flex-1 min-h-0 overflow-hidden" style={{ position: 'relative', minHeight: '400px' }}>
 
-        {/* TradingView iframe — fills the full area */}
+        {/* TradingView iframe — includes native header (Block 2) + chart */}
         <TradingChart
           symbol={symbol}
           timeframe={timeframe}
@@ -96,6 +89,19 @@ export function ChartPanel({
             isOpen={showToolsSidebar}
             onToggle={onToggleToolsSidebar}
           />
+        )}
+
+        {/* Fullscreen button — top-right */}
+        {onFullscreen && (
+          <div className="absolute top-2 right-2 z-30 group/fs">
+            <button
+              onClick={(e) => { e.stopPropagation(); onFullscreen() }}
+              className="p-1.5 rounded text-[#787b86]/0 group-hover/fs:text-[#787b86] hover:!text-white hover:bg-[#2a2e39]/80 transition-all duration-200"
+              title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen (F)'}
+            >
+              {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+            </button>
+          </div>
         )}
       </div>
 

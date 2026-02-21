@@ -105,8 +105,8 @@ function TradingChart({
         // ✅ Native drawing toolbar — the real TradingView tools
         hide_side_toolbar: false,
 
-        // Hide native header — replaced by our TradingHeaderBar (Block 2)
-        hide_top_toolbar: true,
+        // ✅ Native header — TradingView's own toolbar (Block 2)
+        hide_top_toolbar: false,
 
         enable_publishing:   false,
         allow_symbol_change: false,
