@@ -213,7 +213,7 @@ export default function TradePage() {
                     timeframe={timeframe}
                     showToolsSidebar={showToolsSidebar}
                     onToggleToolsSidebar={toggleTVSidebar}
-                    accountId={accountId}
+                    onTimeframeChange={setTimeframe}
                     onFullscreen={() => setChartFullscreen(v => !v)}
                     isFullscreen={chartFullscreen}
                   />
