@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, ChevronDown, Monitor } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Monitor } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
@@ -21,9 +21,9 @@ export default function TradePage() {
   const [chartFullscreen, setChartFullscreen] = useState(false)
   const [showToolsSidebar, setShowToolsSidebar] = useState(true)
 
-  // ── Snap-toggle right panel ──────────────────────────────────────────────
-  const [rightPanelOpen, setRightPanelOpen] = useState(true)  // starts OPEN
-  const [orderExpanded, setOrderExpanded] = useState(false)   // order section starts COLLAPSED
+  // ── Overlay snap-toggle panels ────────────────────────────────────────────
+  const [watchlistOpen, setWatchlistOpen] = useState(true)   // starts OPEN (left)
+  const [orderOpen, setOrderOpen] = useState(false)          // starts CLOSED (right)
 
   // ── Restore persisted preferences from localStorage ───────────────────────
   useEffect(() => {
@@ -32,10 +32,10 @@ export default function TradePage() {
       if (sym) setSelectedSymbol(sym)
       const sb = localStorage.getItem('vp-sidebar')
       if (sb !== null) setShowToolsSidebar(sb === '1')
-      const rp = localStorage.getItem('vp-right-panel')
-      if (rp !== null) setRightPanelOpen(rp === '1')
-      const oe = localStorage.getItem('vp-order-expanded')
-      if (oe !== null) setOrderExpanded(oe === '1')
+      const wl = localStorage.getItem('vp-watchlist')
+      if (wl !== null) setWatchlistOpen(wl === '1')
+      const od = localStorage.getItem('vp-order')
+      if (od !== null) setOrderOpen(od === '1')
     } catch { /* SSR / storage unavailable */ }
   }, [])
 
@@ -47,11 +47,11 @@ export default function TradePage() {
     try { localStorage.setItem('vp-sidebar', showToolsSidebar ? '1' : '0') } catch {}
   }, [showToolsSidebar])
   useEffect(() => {
-    try { localStorage.setItem('vp-right-panel', rightPanelOpen ? '1' : '0') } catch {}
-  }, [rightPanelOpen])
+    try { localStorage.setItem('vp-watchlist', watchlistOpen ? '1' : '0') } catch {}
+  }, [watchlistOpen])
   useEffect(() => {
-    try { localStorage.setItem('vp-order-expanded', orderExpanded ? '1' : '0') } catch {}
-  }, [orderExpanded])
+    try { localStorage.setItem('vp-order', orderOpen ? '1' : '0') } catch {}
+  }, [orderOpen])
 
   // Use the first active account from the session.
   // Falls back to the mock ID so the app still works without Supabase.
@@ -83,7 +83,11 @@ export default function TradePage() {
         break
       case 'a':
       case 'A':
-        setRightPanelOpen(v => !v)
+        setOrderOpen(v => !v)
+        break
+      case 'q':
+      case 'Q':
+        setWatchlistOpen(v => !v)
         break
       case 'Escape':
         setChartFullscreen(false)
@@ -134,12 +138,12 @@ export default function TradePage() {
         <div className="flex-1 overflow-hidden p-2 pt-1 pb-4">
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
-            {/* ── Chart + right panel (flex — chart resizes with panel) ──── */}
-            <div className="flex-1 min-h-0 flex relative">
+            {/* ── Chart + side overlays container ────────────────────────── */}
+            <div className="flex-1 min-h-0 relative">
 
-              {/* CHART — flex-1, resizes when right panel opens/closes */}
+              {/* CHART — always 100% underneath */}
               <div className={cn(
-                'flex-1 min-w-0 relative transition-all duration-300 ease-in-out',
+                'absolute inset-0',
                 chartFullscreen && 'fixed inset-0 z-50',
               )}>
                 <ChartPanel
@@ -152,67 +156,85 @@ export default function TradePage() {
                 />
               </div>
 
-              {/* ═══ TOGGLE ARROW — floats at boundary, never clipped ═══ */}
-              <button
-                onClick={() => setRightPanelOpen(v => !v)}
+              {/* ─── WATCHLIST overlay (left) ─────────────────────────────── */}
+              <div
                 className={cn(
-                  'absolute top-1/2 -translate-y-1/2 z-40',
-                  'w-6 h-14 flex items-center justify-center',
-                  'bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
+                  'absolute top-0 left-0 h-full z-20',
+                  'bg-card border-r border-border',
+                  'transition-[width] duration-300 ease-in-out overflow-hidden',
+                )}
+                style={{ width: watchlistOpen ? '20%' : '0px' }}
+              >
+                <div className="h-full w-full min-w-[200px]">
+                  <WatchlistPanel
+                    selectedSymbol={selectedSymbol}
+                    onSelectSymbol={setSelectedSymbol}
+                  />
+                </div>
+              </div>
+
+              {/* Watchlist toggle button — left edge */}
+              <button
+                onClick={() => setWatchlistOpen(v => !v)}
+                className={cn(
+                  'absolute top-1/2 -translate-y-1/2 z-30',
+                  'w-5 h-10 flex items-center justify-center',
+                  'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-r-md',
                   'text-[#888] hover:text-white',
                   'transition-all duration-300 ease-in-out',
-                  'shadow-lg shadow-black/40',
-                  'cursor-pointer',
+                  'shadow-lg shadow-black/40 cursor-pointer',
                 )}
                 style={{
-                  right: rightPanelOpen ? '20%' : '0px',
-                  transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
+                  left: watchlistOpen ? '20%' : '0px',
+                  transition: 'left 300ms ease-in-out, background-color 200ms, color 200ms',
                 }}
-                title={rightPanelOpen ? 'Replier le panel (A)' : 'Ouvrir le panel (A)'}
+                title={watchlistOpen ? 'Replier la watchlist (Q)' : 'Ouvrir la watchlist (Q)'}
               >
-                <ChevronRight className={cn(
-                  'size-4 transition-transform duration-300',
-                  !rightPanelOpen && 'rotate-180',
+                <ChevronLeft className={cn(
+                  'size-3.5 transition-transform duration-300',
+                  !watchlistOpen && 'rotate-180',
                 )} />
               </button>
 
-              {/* ═══ RIGHT PANEL — Watchlist + Order form ═══ */}
-              <div className="shrink-0 flex transition-[width] duration-300 ease-in-out overflow-hidden"
-                style={{ width: rightPanelOpen ? '20%' : '0px' }}
-              >
-                {/* Panel content */}
-                <div className={cn(
-                  'flex flex-col h-full w-full min-w-[220px] overflow-hidden',
+              {/* ─── ORDER FORM overlay (right) ──────────────────────────── */}
+              <div
+                className={cn(
+                  'absolute top-0 right-0 h-full z-20',
                   'bg-card border-l border-border',
-                )}>
-                  {/* Watchlist — fills remaining space */}
-                  <div className="flex-1 min-h-0 overflow-hidden">
-                    <WatchlistPanel
-                      selectedSymbol={selectedSymbol}
-                      onSelectSymbol={setSelectedSymbol}
-                    />
-                  </div>
-
-                  {/* Order section — collapsible at bottom */}
-                  <div className="shrink-0 border-t border-border">
-                    <button
-                      onClick={() => setOrderExpanded(v => !v)}
-                      className="w-full flex items-center justify-between px-3 py-[5px] text-[10px] font-semibold text-muted-foreground hover:text-foreground/80 transition-colors uppercase tracking-wider bg-light-dark/40"
-                    >
-                      <span>Order</span>
-                      <ChevronDown className={cn('size-3 transition-transform duration-200', orderExpanded && 'rotate-180')} />
-                    </button>
-                    {orderExpanded && (
-                      <div className="max-h-[400px] overflow-y-auto custom-scrollbar">
-                        <OrderFormPanel
-                          symbol={selectedSymbol}
-                          accountId={accountId}
-                        />
-                      </div>
-                    )}
-                  </div>
+                  'transition-[width] duration-300 ease-in-out overflow-hidden',
+                )}
+                style={{ width: orderOpen ? '280px' : '0px' }}
+              >
+                <div className="h-full w-[280px] overflow-y-auto custom-scrollbar">
+                  <OrderFormPanel
+                    symbol={selectedSymbol}
+                    accountId={accountId}
+                  />
                 </div>
               </div>
+
+              {/* Order toggle button — right edge */}
+              <button
+                onClick={() => setOrderOpen(v => !v)}
+                className={cn(
+                  'absolute top-1/2 -translate-y-1/2 z-30',
+                  'w-5 h-10 flex items-center justify-center',
+                  'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
+                  'text-[#888] hover:text-white',
+                  'transition-all duration-300 ease-in-out',
+                  'shadow-lg shadow-black/40 cursor-pointer',
+                )}
+                style={{
+                  right: orderOpen ? '280px' : '0px',
+                  transition: 'right 300ms ease-in-out, background-color 200ms, color 200ms',
+                }}
+                title={orderOpen ? 'Replier le trading (A)' : 'Ouvrir le trading (A)'}
+              >
+                <ChevronRight className={cn(
+                  'size-3.5 transition-transform duration-300',
+                  !orderOpen && 'rotate-180',
+                )} />
+              </button>
 
             </div>
 
