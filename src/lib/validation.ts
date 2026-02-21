@@ -72,6 +72,19 @@ export const RequestPayoutSchema = z.object({
 
 export type RequestPayoutInput = z.infer<typeof RequestPayoutSchema>
 
+// ─── engine/modify-sltp ────────────────────────────────────────────────────
+
+export const ModifySLTPSchema = z.object({
+  position_id: uuid,
+  sl_price: positiveNumber.optional().nullable(),   // null = remove SL
+  tp_price: positiveNumber.optional().nullable(),   // null = remove TP
+}).refine(
+  data => data.sl_price !== undefined || data.tp_price !== undefined,
+  { message: 'At least one of sl_price or tp_price must be provided' }
+)
+
+export type ModifySLTPInput = z.infer<typeof ModifySLTPSchema>
+
 // ─── Helper: format Zod errors into a user-friendly string ─────────────────
 
 export function formatZodErrors(error: z.ZodError): string {

@@ -1,6 +1,6 @@
 /**
  * Engine write handlers — Supabase mode (POST)
- * Covers: engine/orders, engine/close-position, engine/partial-close, engine/cancel-order, engine/request-payout
+ * Covers: engine/orders, engine/close-position, engine/partial-close, engine/cancel-order, engine/modify-sltp, engine/request-payout
  *
  * Security:
  *   - Zod validation on ALL inputs
@@ -17,6 +17,7 @@ import {
   ClosePositionSchema,
   PartialCloseSchema,
   CancelOrderSchema,
+  ModifySLTPSchema,
   RequestPayoutSchema,
   formatZodErrors,
 } from '@/lib/validation'
@@ -29,6 +30,24 @@ const MAX_POSITIONS = 15                       // max open positions per account
 const MAX_PER_INSTRUMENT = 4                   // max positions per symbol
 const DAILY_DRAWDOWN_PCT = new Decimal('0.05') // 5 % daily loss limit
 const PRICE_STALE_MS = 30_000                  // 30 s — reject if price older
+const RATE_LIMIT_MAX = 10                      // max orders per window
+const RATE_LIMIT_WINDOW = 60_000               // 60 s window
+
+// ─── Rate limiter (in-memory, per-user) ─────────────────────────────────────
+
+const orderRateLimits = new Map<string, { count: number; resetAt: number }>()
+
+function checkRateLimit(userId: string): boolean {
+  const now = Date.now()
+  const entry = orderRateLimits.get(userId)
+  if (!entry || now > entry.resetAt) {
+    orderRateLimits.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW })
+    return true
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false
+  entry.count++
+  return true
+}
 
 // ─── Decimal helpers ───────────────────────────────────────────────────────
 
@@ -59,6 +78,13 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // ── RATE LIMIT (10 orders / 60s) ─────────────────────────────────────
+    if (!checkRateLimit(user.id)) {
+      return NextResponse.json({
+        error: `Rate limit exceeded — maximum ${RATE_LIMIT_MAX} orders per minute. Please wait.`
+      }, { status: 429 })
+    }
 
     const admin = createSupabaseAdminClient()
 
@@ -696,6 +722,153 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     }
 
     return NextResponse.json({ success: true, order_id: orderId })
+  }
+
+  // ── engine/modify-sltp (POST) ─────────────────────────────────────────────
+  if (apiPath === 'engine/modify-sltp') {
+    const body = await req.json().catch(() => ({}))
+
+    // ── ZOD VALIDATION ──────────────────────────────────────────────────────
+    const parsed = ModifySLTPSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: formatZodErrors(parsed.error) }, { status: 400 })
+    }
+    const input = parsed.data
+
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const admin = createSupabaseAdminClient()
+
+    // ── Fetch position + verify ownership ───────────────────────────────────
+    const { data: pos } = await admin.from('positions')
+      .select('id, account_id, symbol, direction, entry_price, status')
+      .eq('id', input.position_id)
+      .single()
+
+    if (!pos) return NextResponse.json({ error: 'Position not found' }, { status: 404 })
+    if (pos.status !== 'open') return NextResponse.json({ error: 'Position is not open' }, { status: 400 })
+
+    // Verify user owns this account
+    const { data: acct } = await admin.from('accounts')
+      .select('user_id')
+      .eq('id', pos.account_id)
+      .single()
+    if (!acct || acct.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // ── Get current price for validation ────────────────────────────────────
+    const { data: priceRow } = await admin.from('price_cache')
+      .select('current_price')
+      .eq('symbol', pos.symbol)
+      .single()
+    const currentPrice = priceRow ? Number(priceRow.current_price) : Number(pos.entry_price)
+
+    // ── Validate SL/TP direction ────────────────────────────────────────────
+    if (input.sl_price !== undefined && input.sl_price !== null) {
+      if (pos.direction === 'long' && input.sl_price >= currentPrice) {
+        return NextResponse.json({ error: `SL for long must be below current price ($${currentPrice.toFixed(2)})` }, { status: 400 })
+      }
+      if (pos.direction === 'short' && input.sl_price <= currentPrice) {
+        return NextResponse.json({ error: `SL for short must be above current price ($${currentPrice.toFixed(2)})` }, { status: 400 })
+      }
+    }
+    if (input.tp_price !== undefined && input.tp_price !== null) {
+      if (pos.direction === 'long' && input.tp_price <= currentPrice) {
+        return NextResponse.json({ error: `TP for long must be above current price ($${currentPrice.toFixed(2)})` }, { status: 400 })
+      }
+      if (pos.direction === 'short' && input.tp_price >= currentPrice) {
+        return NextResponse.json({ error: `TP for short must be below current price ($${currentPrice.toFixed(2)})` }, { status: 400 })
+      }
+    }
+
+    const now = new Date().toISOString()
+
+    // ── Handle SL modification ──────────────────────────────────────────────
+    if (input.sl_price !== undefined) {
+      // Find existing SL order (stop type linked to this position)
+      const { data: existingSL } = await admin.from('orders')
+        .select('id')
+        .eq('position_id', input.position_id)
+        .eq('order_type', 'stop')
+        .eq('status', 'pending')
+        .limit(1)
+        .single()
+
+      if (input.sl_price === null) {
+        // Remove SL
+        if (existingSL) {
+          await admin.from('orders').update({ status: 'cancelled', updated_at: now }).eq('id', existingSL.id)
+        }
+      } else if (existingSL) {
+        // Update existing SL
+        await admin.from('orders').update({ stop_price: input.sl_price, updated_at: now }).eq('id', existingSL.id)
+      } else {
+        // Create new SL order
+        const closeDir = pos.direction === 'long' ? 'short' : 'long'
+        const { data: posDetail } = await admin.from('positions')
+          .select('quantity, leverage')
+          .eq('id', input.position_id)
+          .single()
+
+        await admin.from('orders').insert({
+          account_id: pos.account_id,
+          position_id: input.position_id,
+          symbol: pos.symbol,
+          direction: closeDir,
+          order_type: 'stop',
+          stop_price: input.sl_price,
+          quantity: posDetail?.quantity ?? 0,
+          leverage: posDetail?.leverage ?? 1,
+          status: 'pending',
+        })
+      }
+    }
+
+    // ── Handle TP modification ──────────────────────────────────────────────
+    if (input.tp_price !== undefined) {
+      // Find existing TP order (limit type linked to this position)
+      const { data: existingTP } = await admin.from('orders')
+        .select('id')
+        .eq('position_id', input.position_id)
+        .eq('order_type', 'limit')
+        .eq('status', 'pending')
+        .limit(1)
+        .single()
+
+      if (input.tp_price === null) {
+        // Remove TP
+        if (existingTP) {
+          await admin.from('orders').update({ status: 'cancelled', updated_at: now }).eq('id', existingTP.id)
+        }
+      } else if (existingTP) {
+        // Update existing TP
+        await admin.from('orders').update({ price: input.tp_price, updated_at: now }).eq('id', existingTP.id)
+      } else {
+        // Create new TP order
+        const closeDir = pos.direction === 'long' ? 'short' : 'long'
+        const { data: posDetail } = await admin.from('positions')
+          .select('quantity, leverage')
+          .eq('id', input.position_id)
+          .single()
+
+        await admin.from('orders').insert({
+          account_id: pos.account_id,
+          position_id: input.position_id,
+          symbol: pos.symbol,
+          direction: closeDir,
+          order_type: 'limit',
+          price: input.tp_price,
+          quantity: posDetail?.quantity ?? 0,
+          leverage: posDetail?.leverage ?? 1,
+          status: 'pending',
+        })
+      }
+    }
+
+    return NextResponse.json({ success: true })
   }
 
   // ── engine/request-payout ───────────────────────────────────────────────────

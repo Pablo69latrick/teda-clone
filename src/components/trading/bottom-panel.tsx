@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import {
   ChevronDown, ChevronUp, X, Minus, Plus,
   TrendingUp, TrendingDown, AlertTriangle,
-  Pencil, ArrowLeftRight, MoreHorizontal,
+  Pencil, ArrowLeftRight, MoreHorizontal, Target,
 } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -166,6 +166,122 @@ function PartialCloseModal({
   )
 }
 
+// ─── SL/TP Edit Modal ─────────────────────────────────────────────────────────
+function SLTPModal({
+  pos, currentSL, currentTP, markPrice, onClose, onConfirm, loading,
+}: {
+  pos: Position; currentSL: number | null; currentTP: number | null
+  markPrice: number; onClose: () => void
+  onConfirm: (sl: number | null, tp: number | null) => void; loading: boolean
+}) {
+  const [sl, setSl] = useState(currentSL?.toString() ?? '')
+  const [tp, setTp] = useState(currentTP?.toString() ?? '')
+  const [error, setError] = useState('')
+
+  const handleSubmit = () => {
+    setError('')
+    const slVal = sl.trim() === '' ? null : parseFloat(sl)
+    const tpVal = tp.trim() === '' ? null : parseFloat(tp)
+
+    // Client-side validation
+    if (slVal !== null && isNaN(slVal)) { setError('Invalid SL price'); return }
+    if (tpVal !== null && isNaN(tpVal)) { setError('Invalid TP price'); return }
+    if (slVal !== null && slVal <= 0) { setError('SL must be positive'); return }
+    if (tpVal !== null && tpVal <= 0) { setError('TP must be positive'); return }
+
+    if (pos.direction === 'long') {
+      if (slVal !== null && slVal >= markPrice) { setError(`SL must be below market ($${markPrice.toFixed(2)})`); return }
+      if (tpVal !== null && tpVal <= markPrice) { setError(`TP must be above market ($${markPrice.toFixed(2)})`); return }
+    } else {
+      if (slVal !== null && slVal <= markPrice) { setError(`SL must be above market ($${markPrice.toFixed(2)})`); return }
+      if (tpVal !== null && tpVal >= markPrice) { setError(`TP must be below market ($${markPrice.toFixed(2)})`); return }
+    }
+
+    // Only send changed values
+    const slChanged = slVal !== currentSL
+    const tpChanged = tpVal !== currentTP
+    if (!slChanged && !tpChanged) { onClose(); return }
+
+    onConfirm(
+      slChanged ? slVal : undefined as unknown as null,
+      tpChanged ? tpVal : undefined as unknown as null,
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-card border border-border rounded-xl shadow-2xl w-[320px] p-5 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Modify SL / TP</h3>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              <Badge variant={pos.direction as 'long' | 'short'} className="text-[9px] px-1.5 py-0 h-4 mr-1">
+                {pos.direction}
+              </Badge>
+              {pos.symbol} · Entry @ {pos.entry_price.toLocaleString(undefined, { maximumFractionDigits: 5 })}
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-muted/60 text-muted-foreground">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {/* Stop Loss */}
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 block">
+              Stop Loss {pos.direction === 'long' ? '(below market)' : '(above market)'}
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={sl}
+              onChange={e => setSl(e.target.value)}
+              placeholder={currentSL ? `Current: ${currentSL}` : 'No SL set'}
+              className="w-full h-9 px-3 text-sm bg-muted/30 border border-border/50 rounded-lg text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary tabular-nums"
+            />
+          </div>
+
+          {/* Take Profit */}
+          <div>
+            <label className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 block">
+              Take Profit {pos.direction === 'long' ? '(above market)' : '(below market)'}
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={tp}
+              onChange={e => setTp(e.target.value)}
+              placeholder={currentTP ? `Current: ${currentTP}` : 'No TP set'}
+              className="w-full h-9 px-3 text-sm bg-muted/30 border border-border/50 rounded-lg text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary tabular-nums"
+            />
+          </div>
+
+          {/* Market price reference */}
+          <div className="text-[10px] text-muted-foreground text-center">
+            Market: ${markPrice.toLocaleString(undefined, { maximumFractionDigits: 5 })}
+          </div>
+        </div>
+
+        {error && (
+          <p className="text-[11px] text-loss text-center">{error}</p>
+        )}
+
+        <div className="flex gap-2">
+          <button onClick={onClose}
+            className="flex-1 h-9 rounded-lg border border-border/50 text-xs font-medium text-muted-foreground hover:bg-muted/40 transition-colors">
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={loading}
+            className="flex-1 h-9 rounded-lg bg-primary/90 hover:bg-primary text-xs font-semibold text-white transition-colors disabled:opacity-60">
+            {loading ? <div className="size-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin mx-auto" /> : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Risk bar ─────────────────────────────────────────────────────────────────
 function RiskBar({ pos, markPrice }: { pos: Position; markPrice: number }) {
   const liqPrice = pos.liquidation_price
@@ -190,12 +306,13 @@ function RiskBar({ pos, markPrice }: { pos: Position; markPrice: number }) {
 
 // ─── Live position row (TradeLocker style) ────────────────────────────────────
 const LivePositionRow = memo(function LivePositionRow({
-  pos, markPrice, onClose, onPartialClose, onReverse, closing = false,
+  pos, markPrice, onClose, onPartialClose, onReverse, onEditSLTP, closing = false,
 }: {
   pos: Position; markPrice: number
   onClose?: (id: string) => void
   onPartialClose?: (pos: Position) => void
   onReverse?: (pos: Position) => void
+  onEditSLTP?: (pos: Position) => void
   closing?: boolean
 }) {
   const priceDiff = pos.direction === 'long'
@@ -278,6 +395,11 @@ const LivePositionRow = memo(function LivePositionRow({
                   {onClose && (
                     <DropdownMenuItem onClick={() => onClose(pos.id)} className="text-loss focus:text-loss">
                       <X className="size-3.5 mr-2" /> Close position
+                    </DropdownMenuItem>
+                  )}
+                  {onEditSLTP && (
+                    <DropdownMenuItem onClick={() => onEditSLTP(pos)}>
+                      <Target className="size-3.5 mr-2" /> Edit SL / TP
                     </DropdownMenuItem>
                   )}
                   {onPartialClose && (
@@ -478,6 +600,8 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [partialPos, setPartialPos]     = useState<Position | null>(null)
   const [partialLoading, setPartialLoading] = useState(false)
+  const [sltpPos, setSltpPos]           = useState<Position | null>(null)
+  const [sltpLoading, setSltpLoading]   = useState(false)
   const [toasts, setToasts]             = useState<Toast[]>([])
   const toastIdRef                      = useRef(0)
 
@@ -598,6 +722,34 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
       setPartialLoading(false)
     }
   }, [accountId, mutate, tradingData, mutateTradingData, mutateClosed, addToast])
+
+  // ── Modify SL/TP ──
+  const handleModifySLTP = useCallback(async (pos: Position, sl: number | null | undefined, tp: number | null | undefined) => {
+    setSltpLoading(true)
+    try {
+      const body: Record<string, unknown> = { position_id: pos.id }
+      if (sl !== undefined) body.sl_price = sl
+      if (tp !== undefined) body.tp_price = tp
+
+      const res = await fetch('/api/proxy/engine/modify-sltp', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null)
+        addToast('error', errJson?.error ?? `SL/TP update failed (${res.status})`)
+      } else {
+        addToast('success', `${pos.symbol} SL/TP updated`)
+        setSltpPos(null)
+        revalidateAll(mutate, accountId)
+      }
+    } catch (e) {
+      addToast('error', e instanceof Error ? e.message : 'Network error')
+    } finally {
+      setSltpLoading(false)
+    }
+  }, [accountId, mutate, addToast])
 
   // ── Reverse position (close + open opposite, with optimistic) ──
   const handleReverse = useCallback(async (pos: Position) => {
@@ -726,6 +878,26 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
 
   return (
     <>
+      {/* SL/TP edit modal (portal to body) */}
+      {sltpPos && typeof document !== 'undefined' && createPortal(
+        <SLTPModal
+          pos={sltpPos}
+          currentSL={(() => {
+            const slOrder = orders.find(o => o.position_id === sltpPos.id && o.order_type === 'stop' && o.status === 'pending')
+            return slOrder?.stop_price ?? null
+          })()}
+          currentTP={(() => {
+            const tpOrder = orders.find(o => o.position_id === sltpPos.id && o.order_type === 'limit' && o.status === 'pending')
+            return tpOrder?.price ?? null
+          })()}
+          markPrice={prices[sltpPos.symbol] ?? sltpPos.entry_price}
+          onClose={() => setSltpPos(null)}
+          onConfirm={(sl, tp) => handleModifySLTP(sltpPos, sl, tp)}
+          loading={sltpLoading}
+        />,
+        document.body
+      )}
+
       {/* Partial close modal (portal to body) */}
       {partialPos && typeof document !== 'undefined' && createPortal(
         <PartialCloseModal
@@ -813,6 +985,7 @@ export function BottomPanel({ accountId }: BottomPanelProps) {
                       onClose={closingId === pos.id ? undefined : handleClose}
                       onPartialClose={closingId === pos.id ? undefined : setPartialPos}
                       onReverse={closingId === pos.id ? undefined : handleReverse}
+                      onEditSLTP={closingId === pos.id ? undefined : setSltpPos}
                       closing={closingId === pos.id}
                     />
                   ))}
