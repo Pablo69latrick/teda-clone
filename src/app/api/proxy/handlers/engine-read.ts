@@ -104,11 +104,15 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
   }
 
   // ── engine/instruments ──────────────────────────────────────────────────────
+  // Uses admin client (service role) because instruments are public data —
+  // no RLS needed. This ensures the list always loads regardless of auth state.
   if (apiPath === 'engine/instruments') {
-    const supabase = await createSupabaseServerClient()
-    const { data: rows } = await supabase
+    const { createSupabaseAdminClient } = await import('@/lib/supabase/server')
+    const admin = createSupabaseAdminClient()
+    const { data: rows, error } = await admin
       .from('instruments').select('*, price_cache(*)').eq('is_active', true).order('symbol')
 
+    if (error) console.error('[engine/instruments] Supabase error:', error.message)
     return NextResponse.json((rows ?? []).map(mapInstrumentRow))
   }
 

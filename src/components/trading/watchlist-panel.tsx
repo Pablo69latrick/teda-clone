@@ -29,9 +29,31 @@ interface WatchlistPanelProps {
 
 // ─── Fallback instruments (before API loads) ────────────────────────────────
 
+// Full FALLBACK with all 14 instruments — ensures watchlist always renders even if API is slow
+const _fb = (id: string, sym: string, type: 'crypto' | 'forex', base: string, dec: number, price: number): Instrument => ({
+  id, symbol: sym, instrument_type: type, base_currency: base, quote_currency: 'USD',
+  margin_requirement: type === 'forex' ? 0.001 : 0.01, min_order_size: 0.01, max_leverage: type === 'forex' ? 100 : 20,
+  tick_size: Math.pow(10, -dec), lot_size: 0.001, price_decimals: dec, qty_decimals: 2,
+  is_tradable: true, is_active: true, orderbook_enabled: false, trades_enabled: false,
+  current_price: price, current_bid: price, current_ask: price, mark_price: price,
+  funding_rate: -0.0002, next_funding_time: 0, last_updated: 0,
+})
+
 const FALLBACK: Instrument[] = [
-  { id: 'BTC-USD', symbol: 'BTC-USD', instrument_type: 'crypto', base_currency: 'BTC', quote_currency: 'USD', margin_requirement: 0.01, min_order_size: 0.001, max_leverage: 20, tick_size: 0.01, lot_size: 0.001, price_decimals: 2, qty_decimals: 3, is_tradable: true, is_active: true, orderbook_enabled: false, trades_enabled: false, current_price: 95420.50, current_bid: 95419.00, current_ask: 95421.00, mark_price: 95420.50, funding_rate: -0.0002, next_funding_time: 0, last_updated: 0 },
-  { id: 'ETH-USD', symbol: 'ETH-USD', instrument_type: 'crypto', base_currency: 'ETH', quote_currency: 'USD', margin_requirement: 0.01, min_order_size: 0.001, max_leverage: 20, tick_size: 0.01, lot_size: 0.001, price_decimals: 2, qty_decimals: 2, is_tradable: true, is_active: true, orderbook_enabled: false, trades_enabled: false, current_price: 3450.25, current_bid: 3449.75, current_ask: 3450.75, mark_price: 3450.25, funding_rate: -0.0002, next_funding_time: 0, last_updated: 0 },
+  _fb('1INCH-USD', '1INCH-USD', 'crypto', '1INCH', 5, 0.0938),
+  _fb('AAVE-USD',  'AAVE-USD',  'crypto', 'AAVE',  3, 115.45),
+  _fb('ADA-USD',   'ADA-USD',   'crypto', 'ADA',   4, 0.285),
+  _fb('ARB-USD',   'ARB-USD',   'crypto', 'ARB',   5, 0.0967),
+  _fb('ASTER-USD', 'ASTER-USD', 'crypto', 'ASTER', 5, 0.0075),
+  _fb('AUD-USD',   'AUD-USD',   'forex',  'AUD',   5, 0.6959),
+  _fb('BTC-USD',   'BTC-USD',   'crypto', 'BTC',   2, 67971.44),
+  _fb('DOGE-USD',  'DOGE-USD',  'crypto', 'DOGE',  5, 0.10004),
+  _fb('ETH-USD',   'ETH-USD',   'crypto', 'ETH',   2, 1967.92),
+  _fb('EUR-USD',   'EUR-USD',   'forex',  'EUR',   5, 1.0842),
+  _fb('GBP-USD',   'GBP-USD',   'forex',  'GBP',   5, 1.2675),
+  _fb('LINK-USD',  'LINK-USD',  'crypto', 'LINK',  4, 8.95),
+  _fb('SOL-USD',   'SOL-USD',   'crypto', 'SOL',   3, 84.69),
+  _fb('XRP-USD',   'XRP-USD',   'crypto', 'XRP',   5, 1.4258),
 ]
 
 // ─── Category definitions ───────────────────────────────────────────────────
