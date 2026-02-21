@@ -8,6 +8,7 @@ import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
+import { TV_SIDEBAR_WIDTH } from '@/components/trading/trading-chart'
 import { useAccounts } from '@/lib/hooks'
 import { usePriceStream } from '@/lib/use-price-stream'
 
@@ -212,44 +213,44 @@ export default function TradePage() {
                   />
                 </div>
 
-                {/* Toggle buttons — right edge, stacked vertically */}
-                <div className="absolute top-1/2 -translate-y-1/2 right-0 z-30 flex flex-col gap-1">
-                  {/* Tools sidebar toggle (W) */}
-                  <button
-                    onClick={() => setShowToolsSidebar(v => !v)}
-                    className={cn(
-                      'w-5 h-10 flex items-center justify-center',
-                      'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
-                      'text-[#888] hover:text-white',
-                      'transition-all duration-300 ease-in-out',
-                      'shadow-lg shadow-black/40 cursor-pointer',
-                    )}
-                    title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
-                  >
-                    <ChevronLeft className={cn(
-                      'size-3.5 transition-transform duration-300',
-                      !showToolsSidebar && 'rotate-180',
-                    )} />
-                  </button>
+                {/* Tools sidebar toggle (W) — at sidebar right edge */}
+                <button
+                  onClick={() => setShowToolsSidebar(v => !v)}
+                  className={cn(
+                    'absolute top-1/2 -translate-y-1/2 z-30',
+                    'w-5 h-10 flex items-center justify-center',
+                    'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-r-md',
+                    'text-[#888] hover:text-white',
+                    'transition-all duration-300 ease-in-out',
+                    'shadow-lg shadow-black/40 cursor-pointer',
+                  )}
+                  style={{ left: showToolsSidebar ? TV_SIDEBAR_WIDTH : 0 }}
+                  title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
+                >
+                  <ChevronLeft className={cn(
+                    'size-3.5 transition-transform duration-300',
+                    !showToolsSidebar && 'rotate-180',
+                  )} />
+                </button>
 
-                  {/* Panel toggle (A) */}
-                  <button
-                    onClick={() => setPanelOpen(v => !v)}
-                    className={cn(
-                      'w-5 h-10 flex items-center justify-center',
-                      'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
-                      'text-[#888] hover:text-white',
-                      'transition-all duration-300 ease-in-out',
-                      'shadow-lg shadow-black/40 cursor-pointer',
-                    )}
-                    title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
-                  >
-                    <ChevronRight className={cn(
-                      'size-3.5 transition-transform duration-300',
-                      !panelOpen && 'rotate-180',
-                    )} />
-                  </button>
-                </div>
+                {/* Panel toggle (A) — right edge of chart */}
+                <button
+                  onClick={() => setPanelOpen(v => !v)}
+                  className={cn(
+                    'absolute top-1/2 -translate-y-1/2 right-0 z-30',
+                    'w-5 h-10 flex items-center justify-center',
+                    'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-l-md',
+                    'text-[#888] hover:text-white',
+                    'transition-all duration-300 ease-in-out',
+                    'shadow-lg shadow-black/40 cursor-pointer',
+                  )}
+                  title={panelOpen ? 'Replier le panneau (A)' : 'Ouvrir le panneau (A)'}
+                >
+                  <ChevronRight className={cn(
+                    'size-3.5 transition-transform duration-300',
+                    !panelOpen && 'rotate-180',
+                  )} />
+                </button>
               </div>
 
               {/* ─── RIGHT PANEL — flex item, chart resizes around it ────── */}

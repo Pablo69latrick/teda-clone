@@ -7,7 +7,8 @@
  * indicators, timeframe selector, crosshair, etc.).
  *
  * The widget is recreated only when symbol or timeframe changes.
- * The drawing-tools sidebar is toggled via CSS shift (no reload).
+ * The drawing-tools sidebar is toggled via CSS clip-path (L-shape mask)
+ * so the top toolbar always stays in place. No reload needed.
  * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
  */
 
@@ -41,8 +42,11 @@ const TV_INTERVALS: Record<string, string> = {
   '1d':  'D',
 }
 
-// ─── TradingView left-side drawing tools sidebar width (px) ─────────────────
-const TV_SIDEBAR_WIDTH = 53
+// ─── TradingView layout constants (px) ──────────────────────────────────────
+/** Left-side drawing tools sidebar width */
+export const TV_SIDEBAR_WIDTH = 53
+/** Top toolbar height (timeframes, indicators, chart type…) */
+export const TV_TOP_BAR_HEIGHT = 38
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -70,7 +74,7 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     wrapper.appendChild(inner)
 
     // Inject TradingView embed script with config
-    // Always create with sidebar visible — CSS handles hide/show
+    // Always create with sidebar visible — CSS clip-path handles hide/show
     const script = document.createElement('script')
     script.type = 'text/javascript'
     script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
@@ -102,16 +106,20 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     }
   }, [symbol, timeframe])
 
-  // CSS-based sidebar toggle: shift the widget left to hide the sidebar,
-  // expand width to compensate — no widget reload needed
+  // L-shaped clip-path: when hiding the sidebar, clip only the sidebar area
+  // (left strip below the top toolbar) while keeping the top toolbar at full width.
+  // Both states use 6 polygon points so the clip-path transition animates smoothly.
+  const clipVisible = `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 ${TV_TOP_BAR_HEIGHT}px, 0 ${TV_TOP_BAR_HEIGHT}px)`
+  const clipHidden  = `polygon(0 0, 100% 0, 100% 100%, ${TV_SIDEBAR_WIDTH}px 100%, ${TV_SIDEBAR_WIDTH}px ${TV_TOP_BAR_HEIGHT}px, 0 ${TV_TOP_BAR_HEIGHT}px)`
+
   return (
     <div className="w-full h-full overflow-hidden" style={{ minHeight: 300 }}>
       <div
         ref={containerRef}
-        className="h-full transition-all duration-300 ease-in-out"
+        className="w-full h-full"
         style={{
-          marginLeft: showToolsSidebar ? 0 : -TV_SIDEBAR_WIDTH,
-          width: showToolsSidebar ? '100%' : `calc(100% + ${TV_SIDEBAR_WIDTH}px)`,
+          clipPath: showToolsSidebar ? clipVisible : clipHidden,
+          transition: 'clip-path 0.3s ease-in-out',
         }}
       />
     </div>
