@@ -8,7 +8,7 @@ import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
-import { TV_SIDEBAR_WIDTH } from '@/components/trading/trading-chart'
+import { SIDEBAR_WIDTH } from '@/components/trading/trading-sidebar'
 import { useAccounts } from '@/lib/hooks'
 import { usePriceStream } from '@/lib/use-price-stream'
 
@@ -224,7 +224,7 @@ export default function TradePage() {
                     'transition-all duration-300 ease-in-out',
                     'shadow-lg shadow-black/40 cursor-pointer',
                   )}
-                  style={{ left: showToolsSidebar ? TV_SIDEBAR_WIDTH : 0 }}
+                  style={{ left: showToolsSidebar ? SIDEBAR_WIDTH : 0 }}
                   title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
                 >
                   <ChevronLeft className={cn(

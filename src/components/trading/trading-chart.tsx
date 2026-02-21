@@ -3,13 +3,14 @@
 /**
  * TradingChart — TradingView Advanced Chart widget embed.
  *
- * Renders TradingView's full chart with toolbar (drawing tools,
- * indicators, timeframe selector, crosshair, etc.).
+ * Renders TradingView's full chart at 100% width. The built-in side
+ * toolbar is hidden (`hide_side_toolbar: true`) — a custom floating
+ * sidebar (TradingSidebar) overlays the chart independently so the
+ * chart NEVER moves or resizes when the sidebar toggles.
+ *
+ * Drawing tools remain accessible from TradingView's top toolbar.
  *
  * The widget is recreated only when symbol or timeframe changes.
- * The drawing-tools sidebar is toggled via CSS margin-shift so
- * it slides off-screen to the left (same pattern as the right panel).
- * No widget reload needed.
  * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
  */
 
@@ -20,14 +21,11 @@ import { useEffect, useRef, memo } from 'react'
 interface TradingChartProps {
   symbol: string
   timeframe?: string
-  /** Show/hide the left-side drawing tools sidebar (W key) */
-  showToolsSidebar?: boolean
 }
 
 // ─── Symbol mapping ─────────────────────────────────────────────────────────
 
 function toTVSymbol(vpSymbol: string): string {
-  // BTC-USD → BINANCE:BTCUSDT
   const mapped = vpSymbol.replace(/-USD$/, 'USDT').replace(/-/g, '')
   return `BINANCE:${mapped}`
 }
@@ -43,18 +41,11 @@ const TV_INTERVALS: Record<string, string> = {
   '1d':  'D',
 }
 
-// ─── TradingView layout constants (px) ──────────────────────────────────────
-/** Left-side drawing tools sidebar width */
-export const TV_SIDEBAR_WIDTH = 53
-/** Top toolbar height (timeframes, indicators, chart type…) */
-export const TV_TOP_BAR_HEIGHT = 38
-
 // ─── Component ──────────────────────────────────────────────────────────────
 
-function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: TradingChartProps) {
+function TradingChart({ symbol, timeframe = '1h' }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // Widget is only recreated when symbol or timeframe changes — NOT showToolsSidebar
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -75,7 +66,6 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     wrapper.appendChild(inner)
 
     // Inject TradingView embed script with config
-    // Always create with sidebar visible — CSS margin-shift handles hide/show
     const script = document.createElement('script')
     script.type = 'text/javascript'
     script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
@@ -92,7 +82,7 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
       gridColor: 'rgba(10, 10, 10, 0)',
       hide_top_toolbar: false,
       hide_legend: false,
-      hide_side_toolbar: false,
+      hide_side_toolbar: true,
       allow_symbol_change: false,
       save_image: false,
       calendar: false,
@@ -107,33 +97,9 @@ function TradingChart({ symbol, timeframe = '1h', showToolsSidebar = true }: Tra
     }
   }, [symbol, timeframe])
 
-  // CSS margin-shift: slides the entire widget left so the sidebar
-  // disappears off-screen while the chart expands to fill the space.
-  // A top-bar patch fills the gap left in the toolbar so visually
-  // only the drawing-tools sidebar moves — the top bar stays intact.
   return (
-    <div className="w-full h-full overflow-hidden relative" style={{ minHeight: 300 }}>
-      <div
-        ref={containerRef}
-        className="h-full transition-[margin-left,width] duration-300 ease-in-out"
-        style={{
-          marginLeft: showToolsSidebar ? 0 : -TV_SIDEBAR_WIDTH,
-          width: showToolsSidebar ? '100%' : `calc(100% + ${TV_SIDEBAR_WIDTH}px)`,
-        }}
-      />
-
-      {/* Top-bar patch: fills the toolbar gap when shifted so the
-          top bar looks continuous. Uses TradingView's dark toolbar color
-          + bottom border to match seamlessly. */}
-      <div
-        className="absolute top-0 left-0 z-10 pointer-events-none transition-[width] duration-300 ease-in-out"
-        style={{
-          width: showToolsSidebar ? 0 : TV_SIDEBAR_WIDTH,
-          height: TV_TOP_BAR_HEIGHT,
-          backgroundColor: '#131722',
-          borderBottom: '1px solid #2a2e39',
-        }}
-      />
+    <div className="w-full h-full" style={{ minHeight: 300 }}>
+      <div ref={containerRef} className="h-full w-full" />
     </div>
   )
 }
