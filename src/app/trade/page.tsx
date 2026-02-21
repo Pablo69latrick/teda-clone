@@ -1,12 +1,11 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronLeft, ChevronRight, Monitor, BarChart3, ShoppingCart } from 'lucide-react'
+import { ChevronRight, Monitor, BarChart3, ShoppingCart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
-import { SIDEBAR_WIDTH } from '@/components/trading/trading-chart'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
 import { useAccounts } from '@/lib/hooks'
@@ -15,8 +14,6 @@ import { usePriceStream } from '@/lib/use-price-stream'
 // Fallback used only in mock / dev mode (no Supabase configured)
 const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 
-/** Alias for toggle button positioning */
-const TV_SIDEBAR_PX = SIDEBAR_WIDTH
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -38,9 +35,6 @@ export default function TradePage() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTC-USD')
   const [chartFullscreen, setChartFullscreen] = useState(false)
   const [timeframe, setTimeframe] = useState<string>('1h')
-
-  // ── TradingView widget ref (for API calls: sidebar toggle, etc.) ──────────
-  const tvWidgetRef = useRef<any>(null)
 
   // ── TradingView tools sidebar (left-side drawing tools) ───────────────────
   const [showToolsSidebar, setShowToolsSidebar] = useState(true)
@@ -93,11 +87,6 @@ export default function TradePage() {
 
   // Connect SSE price stream
   usePriceStream(accountId)
-
-  // ── Widget ready handler — store ref ──────────────────────────────────────
-  const handleWidgetReady = useCallback((widget: any) => {
-    tvWidgetRef.current = widget
-  }, [])
 
   // ── Toggle TradingView sidebar (CSS margin-shift — no API needed) ────────
   const toggleTVSidebar = useCallback(() => {
@@ -223,32 +212,12 @@ export default function TradePage() {
                     symbol={selectedSymbol}
                     timeframe={timeframe}
                     showToolsSidebar={showToolsSidebar}
-                    onWidgetReady={handleWidgetReady}
+                    onToggleToolsSidebar={toggleTVSidebar}
                     accountId={accountId}
                     onFullscreen={() => setChartFullscreen(v => !v)}
                     isFullscreen={chartFullscreen}
                   />
                 </div>
-
-                {/* Tools sidebar toggle (W) — at sidebar right edge */}
-                <button
-                  onClick={toggleTVSidebar}
-                  className={cn(
-                    'absolute top-1/2 -translate-y-1/2 z-30',
-                    'w-5 h-10 flex items-center justify-center',
-                    'bg-[#1a1a1a]/80 hover:bg-[#2a2a2a] border border-[#333] rounded-r-md',
-                    'text-[#888] hover:text-white',
-                    'transition-all duration-300 ease-in-out',
-                    'shadow-lg shadow-black/40 cursor-pointer',
-                  )}
-                  style={{ left: showToolsSidebar ? TV_SIDEBAR_PX : 0 }}
-                  title={showToolsSidebar ? 'Masquer les outils (W)' : 'Afficher les outils (W)'}
-                >
-                  <ChevronLeft className={cn(
-                    'size-3.5 transition-transform duration-300',
-                    !showToolsSidebar && 'rotate-180',
-                  )} />
-                </button>
 
                 {/* Panel toggle (A) — right edge of chart */}
                 <button

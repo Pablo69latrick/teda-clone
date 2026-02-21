@@ -1,20 +1,21 @@
 'use client'
 
 /**
- * Chart panel — TradingView Advanced Charts widget + UTC clock.
+ * Chart panel — composes three independent layers:
  *
- * The widget uses tv.js (TradingView.widget()) and includes natively:
- *   - Header toolbar (timeframes, indicators, chart type)
- *   - Drawing-tools sidebar (line, fibonacci, rectangle, text, etc.)
- *   - Real-time chart from TradingView's data
+ *   1. TradingChart  — the TradingView iframe (chart + native sidebar)
+ *   2. TradingToolbar — isolated overlay for the drawing-tools sidebar
+ *   3. UTC clock bar  — always visible at the bottom
  *
- * Below the chart, a live UTC clock bar is always visible.
- * No custom toolbar needed — TradingView's native header has everything.
+ * The toolbar is a **separate component** that floats over the chart.
+ * It controls visibility of the native TradingView drawing-tools sidebar
+ * via CSS margin-shift on the iframe — the chart itself never moves.
  */
 
 import { useState, useEffect } from 'react'
 import dynamic from 'next/dynamic'
 import { Maximize2, Minimize2 } from 'lucide-react'
+import { TradingToolbar } from './trading-toolbar'
 
 // ── Lazy-load the chart component (no SSR — loads tv.js into DOM) ────────────
 
@@ -61,6 +62,7 @@ interface ChartPanelProps {
   symbol: string
   timeframe: string
   showToolsSidebar?: boolean
+  onToggleToolsSidebar?: () => void
   onWidgetReady?: (widget: any) => void
   accountId?: string
   onFullscreen?: () => void
@@ -73,14 +75,17 @@ export function ChartPanel({
   symbol,
   timeframe,
   showToolsSidebar = true,
+  onToggleToolsSidebar,
   onWidgetReady,
   onFullscreen,
   isFullscreen,
 }: ChartPanelProps) {
   return (
     <div className="h-full w-full bg-[#0a0a0a] overflow-hidden flex flex-col">
-      {/* ── Chart area — TradingView widget with native toolbar + sidebar ── */}
+      {/* ── Chart area — contains chart + toolbar as independent layers ── */}
       <div className="flex-1 min-h-0 overflow-hidden" style={{ position: 'relative', minHeight: '400px' }}>
+
+        {/* Layer 1: TradingView chart (iframe) — fills the full area */}
         <TradingChart
           symbol={symbol}
           timeframe={timeframe}
@@ -88,7 +93,15 @@ export function ChartPanel({
           onWidgetReady={onWidgetReady}
         />
 
-        {/* Fullscreen overlay button — top-right of chart area */}
+        {/* Layer 2: Toolbar overlay — floats independently over the chart */}
+        {onToggleToolsSidebar && (
+          <TradingToolbar
+            isOpen={showToolsSidebar}
+            onToggle={onToggleToolsSidebar}
+          />
+        )}
+
+        {/* Layer 3: Fullscreen button — top-right */}
         {onFullscreen && (
           <div className="absolute top-2 right-2 z-30 group/fs">
             <button
