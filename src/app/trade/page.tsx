@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { WatchlistPanel } from '@/components/trading/watchlist-panel'
 import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
+import { SIDEBAR_WIDTH } from '@/components/trading/trading-chart'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
 import { useAccounts } from '@/lib/hooks'
@@ -14,8 +15,8 @@ import { usePriceStream } from '@/lib/use-price-stream'
 // Fallback used only in mock / dev mode (no Supabase configured)
 const MOCK_ACCOUNT_ID = 'f2538dee-cfb0-422a-bf7b-c6b247145b3a'
 
-/** Approximate width of TradingView's native drawing-tools sidebar (px) */
-const TV_SIDEBAR_PX = 53
+/** Alias for toggle button positioning */
+const TV_SIDEBAR_PX = SIDEBAR_WIDTH
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 type Timeframe = typeof TIMEFRAMES[number]
@@ -43,8 +44,6 @@ export default function TradePage() {
 
   // ── TradingView tools sidebar (left-side drawing tools) ───────────────────
   const [showToolsSidebar, setShowToolsSidebar] = useState(true)
-  const showToolsSidebarRef = useRef(showToolsSidebar)
-  useEffect(() => { showToolsSidebarRef.current = showToolsSidebar }, [showToolsSidebar])
 
   // ── Right panel state ─────────────────────────────────────────────────────
   const [panelOpen, setPanelOpen] = useState(true)
@@ -95,19 +94,14 @@ export default function TradePage() {
   // Connect SSE price stream
   usePriceStream(accountId)
 
-  // ── Widget ready handler — store ref + sync sidebar state ─────────────────
+  // ── Widget ready handler — store ref ──────────────────────────────────────
   const handleWidgetReady = useCallback((widget: any) => {
     tvWidgetRef.current = widget
-    // If the user had the sidebar hidden (from localStorage), toggle it now
-    if (!showToolsSidebarRef.current) {
-      try { widget.chart().executeActionById('drawingToolbarAction') } catch {}
-    }
   }, [])
 
-  // ── Toggle TradingView sidebar via API ────────────────────────────────────
+  // ── Toggle TradingView sidebar (CSS margin-shift — no API needed) ────────
   const toggleTVSidebar = useCallback(() => {
     setShowToolsSidebar(v => !v)
-    try { tvWidgetRef.current?.chart().executeActionById('drawingToolbarAction') } catch {}
   }, [])
 
   // ── Macro key handler (shared between keydown + postMessage) ──────────────
@@ -228,6 +222,7 @@ export default function TradePage() {
                   <ChartPanel
                     symbol={selectedSymbol}
                     timeframe={timeframe}
+                    showToolsSidebar={showToolsSidebar}
                     onWidgetReady={handleWidgetReady}
                     accountId={accountId}
                     onFullscreen={() => setChartFullscreen(v => !v)}

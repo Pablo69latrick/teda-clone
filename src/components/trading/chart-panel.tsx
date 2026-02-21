@@ -60,6 +60,7 @@ function UTCClock() {
 interface ChartPanelProps {
   symbol: string
   timeframe: string
+  showToolsSidebar?: boolean
   onWidgetReady?: (widget: any) => void
   accountId?: string
   onFullscreen?: () => void
@@ -71,6 +72,7 @@ interface ChartPanelProps {
 export function ChartPanel({
   symbol,
   timeframe,
+  showToolsSidebar = true,
   onWidgetReady,
   onFullscreen,
   isFullscreen,
@@ -82,6 +84,7 @@ export function ChartPanel({
         <TradingChart
           symbol={symbol}
           timeframe={timeframe}
+          showToolsSidebar={showToolsSidebar}
           onWidgetReady={onWidgetReady}
         />
 

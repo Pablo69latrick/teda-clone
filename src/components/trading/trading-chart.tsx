@@ -1,21 +1,20 @@
 'use client'
 
 /**
- * TradingChart — TradingView Advanced Charts widget (tv.js).
+ * TradingChart — TradingView Advanced Charts embed via tv.js.
  *
- * Uses `new TradingView.widget()` for a full-featured chart with:
- *   - Native drawing-tools sidebar (real TradingView tools)
+ * Uses `new TradingView.widget()` (the free embed widget) which provides:
+ *   - Native drawing-tools sidebar
  *   - Native header toolbar (timeframes, indicators, chart type)
- *   - API for symbol/timeframe changes (no widget recreation)
- *   - Local storage persistence for drawings and settings
+ *   - Dark theme, overrides, enabled/disabled features
+ *   - Local storage persistence for chart settings
  *
- * The widget is created ONCE on mount. Subsequent symbol/timeframe
- * changes are applied via the TradingView API — zero reload.
+ * Important: tv.js is the **embed widget** wrapper, NOT the charting library.
+ * It does NOT have .chart(), .setSymbol(), .setResolution(), etc.
+ * Symbol/timeframe changes require widget recreation (fast — just a new iframe).
  *
- * The native drawing-tools sidebar can be toggled via:
- *   widget.chart().executeActionById("drawingToolbarAction")
- *
- * Symbol mapping: VP format (BTC-USD) → TradingView (BINANCE:BTCUSDT).
+ * The sidebar is toggled via CSS margin-shift (the iframe is a single unit,
+ * we shift it left to hide the 53px sidebar off-screen).
  */
 
 import { useEffect, useRef, memo } from 'react'
@@ -28,12 +27,20 @@ declare global {
   }
 }
 
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+/** Width of TradingView's native drawing-tools sidebar (px) */
+export const SIDEBAR_WIDTH = 53
+
+const CONTAINER_ID = 'tradingview-widget-container'
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface TradingChartProps {
   symbol: string
   timeframe?: string
-  /** Called once when the widget is ready, with the widget instance */
+  showToolsSidebar?: boolean
+  /** Called once when the widget is ready */
   onWidgetReady?: (widget: any) => void
 }
 
@@ -57,52 +64,50 @@ const TV_INTERVALS: Record<string, string> = {
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const widgetRef    = useRef<any>(null)
-  const readyRef     = useRef(false)
-
-  // Mutable refs so the init closure always reads the latest values
-  const onReadyRef   = useRef(onWidgetReady)
-  const symbolRef    = useRef(symbol)
-  const tfRef        = useRef(timeframe)
-
+function TradingChart({
+  symbol,
+  timeframe = '1h',
+  showToolsSidebar = true,
+  onWidgetReady,
+}: TradingChartProps) {
+  const widgetRef  = useRef<any>(null)
+  const onReadyRef = useRef(onWidgetReady)
   onReadyRef.current = onWidgetReady
-  symbolRef.current  = symbol
-  tfRef.current      = timeframe
 
-  // ── Create widget ONCE on mount ────────────────────────────────────────
+  // ── Create / recreate widget when symbol or timeframe changes ───────────
   useEffect(() => {
-    let mounted = true
+    let cancelled = false
     const SCRIPT_ID = 'tradingview-tv-js'
 
-    function init() {
-      if (!mounted || !containerRef.current || widgetRef.current) return
+    function createWidget() {
+      if (cancelled) return
       if (!window.TradingView?.widget) {
-        console.error('[TV] window.TradingView.widget not found after script load')
+        console.error('[TV] window.TradingView.widget not available')
         return
       }
 
-      console.log('[TV] Initializing widget…')
+      console.log('[TV] Creating widget —', symbol, timeframe)
 
-      widgetRef.current = new window.TradingView.widget({
-        container: containerRef.current,
-        autosize: true,
-        symbol:   toTVSymbol(symbolRef.current),
-        interval: TV_INTERVALS[tfRef.current] ?? '60',
-        timezone: 'Etc/UTC',
-        theme:    'dark',
-        style:    '1',
-        locale:   'fr',
+      // TradingView.widget() clears the container (innerHTML = "") before
+      // inserting the new iframe, so no manual cleanup needed.
+      const w = new window.TradingView.widget({
+        container_id: CONTAINER_ID,
+        autosize:     true,
+        symbol:       toTVSymbol(symbol),
+        interval:     TV_INTERVALS[timeframe] ?? '60',
+        timezone:     'Etc/UTC',
+        theme:        'dark',
+        style:        '1',
+        locale:       'fr',
 
         toolbar_bg: '#131722',
 
         // ✅ Native drawing toolbar — the real TradingView tools
         hide_side_toolbar: false,
 
-        enable_publishing:  false,
+        enable_publishing:   false,
         allow_symbol_change: false,
-        save_image: false,
+        save_image:          false,
 
         enabled_features: [
           'use_localstorage_for_settings',
@@ -129,70 +134,60 @@ function TradingChart({ symbol, timeframe = '1h', onWidgetReady }: TradingChartP
         loading_screen: { backgroundColor: '#0a0a0a' },
       })
 
-      widgetRef.current.onChartReady(() => {
-        if (!mounted) return
+      widgetRef.current = w
+
+      // tv.js uses .ready(), NOT .onChartReady()
+      w.ready(() => {
+        if (cancelled) return
         console.log('[TV] ✅ Chart ready')
-        readyRef.current = true
-
-        // Sync with current props (they may have changed while widget loaded)
-        try { widgetRef.current.chart().setSymbol(toTVSymbol(symbolRef.current)) } catch {}
-        try { widgetRef.current.chart().setResolution(TV_INTERVALS[tfRef.current] ?? '60') } catch {}
-
-        onReadyRef.current?.(widgetRef.current)
+        onReadyRef.current?.(w)
       })
     }
 
-    // Load tv.js once, then initialise
+    // Load tv.js script once, then create widget
     const existing = document.getElementById(SCRIPT_ID)
     if (!existing) {
       const s  = document.createElement('script')
       s.id     = SCRIPT_ID
       s.src    = 'https://s3.tradingview.com/tv.js'
       s.async  = true
-      s.onload = () => { console.log('[TV] Script loaded'); init() }
+      s.onload = () => { console.log('[TV] Script loaded'); createWidget() }
       s.onerror = () => console.error('[TV] ❌ Failed to load tv.js')
       document.head.appendChild(s)
     } else if (window.TradingView?.widget) {
-      init()
+      createWidget()
     } else {
-      existing.addEventListener('load', init, { once: true })
+      existing.addEventListener('load', createWidget, { once: true })
     }
 
     return () => {
-      mounted = false
+      cancelled = true
       if (widgetRef.current) {
         try { widgetRef.current.remove() } catch {}
         widgetRef.current = null
-        readyRef.current  = false
       }
     }
-  }, [])
+  }, [symbol, timeframe])
 
-  // ── Update symbol via API (no recreation) ──────────────────────────────
-  useEffect(() => {
-    if (readyRef.current && widgetRef.current) {
-      try { widgetRef.current.chart().setSymbol(toTVSymbol(symbol)) } catch {}
-    }
-  }, [symbol])
-
-  // ── Update timeframe via API (no recreation) ──────────────────────────
-  useEffect(() => {
-    if (readyRef.current && widgetRef.current) {
-      try { widgetRef.current.chart().setResolution(TV_INTERVALS[timeframe] ?? '60') } catch {}
-    }
-  }, [timeframe])
+  // ── CSS margin-shift to toggle the native sidebar ──────────────────────
+  // When showToolsSidebar is false, shift the iframe left by 53px so the
+  // drawing toolbar slides off-screen. The parent must have overflow:hidden.
+  const shiftStyle = showToolsSidebar
+    ? { marginLeft: 0, width: '100%' }
+    : { marginLeft: -SIDEBAR_WIDTH, width: `calc(100% + ${SIDEBAR_WIDTH}px)` }
 
   return (
     <div
-      ref={containerRef}
+      id={CONTAINER_ID}
       style={{
         position: 'absolute',
         top: 0,
         left: 0,
         right: 0,
         bottom: 0,
-        width: '100%',
         height: '100%',
+        transition: 'margin-left 0.3s ease, width 0.3s ease',
+        ...shiftStyle,
       }}
     />
   )
