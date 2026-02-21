@@ -1,16 +1,16 @@
 'use client'
 
 /**
- * Chart panel — Lightweight Charts v5 (no toolbar, pure chart).
+ * Chart panel — TradingView Advanced Chart widget with full toolbar.
  *
- * The timeframe selector lives in the right-side overlay panel (trade/page.tsx).
- * This component only renders the chart canvas + a fullscreen overlay button.
+ * The timeframe can also be controlled from the right panel (trade/page.tsx)
+ * or keyboard shortcuts. Changing it recreates the widget with the new interval.
  */
 
 import dynamic from 'next/dynamic'
 import { Maximize2, Minimize2 } from 'lucide-react'
 
-// ── Lazy-load the chart component (no SSR — uses Canvas 2D) ──────────────────
+// ── Lazy-load the chart component (no SSR — injects <script> into DOM) ───────
 
 const TradingChart = dynamic(
   () => import('@/components/trading/trading-chart'),
@@ -47,7 +47,7 @@ export function ChartPanel({
 }: ChartPanelProps) {
   return (
     <div className="relative h-full w-full bg-[#0a0a0a] overflow-hidden">
-      {/* Chart — fills entire container */}
+      {/* TradingView chart — fills entire container, includes toolbar */}
       <TradingChart symbol={symbol} timeframe={timeframe} />
 
       {/* Fullscreen overlay button — top-right corner, hover-reveal */}
