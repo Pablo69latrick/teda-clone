@@ -48,8 +48,8 @@ export async function middleware(req: NextRequest) {
     })
 
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      hasSession = !!session
+      const { data: { user } } = await supabase.auth.getUser()
+      hasSession = !!user
     } catch {
       hasSession = false
     }

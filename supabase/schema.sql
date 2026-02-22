@@ -116,11 +116,14 @@ create table if not exists public.accounts (
   account_status          text not null default 'active'
     check (account_status in ('active','breached','passed','funded','closed')),
   current_phase           int not null default 1,
+  breach_reason           text,
   created_at              timestamptz not null default now(),
   updated_at              timestamptz not null default now()
 );
 
 create index if not exists accounts_user_id_idx on public.accounts(user_id);
+create index if not exists accounts_user_active_idx on public.accounts(user_id, is_active);
+create index if not exists accounts_status_idx on public.accounts(account_status);
 
 -- ── 6. Positions ──────────────────────────────────────────────────────────────
 create table if not exists public.positions (
@@ -138,7 +141,7 @@ create table if not exists public.positions (
   exit_timestamp      bigint,
   liquidation_price   numeric,
   status              text not null default 'open' check (status in ('open','closed')),
-  close_reason        text check (close_reason in ('manual','sl','tp','limit','liquidation') or close_reason is null),
+  close_reason        text check (close_reason in ('manual','sl','tp','limit','liquidation','admin_force') or close_reason is null),
   margin_mode         text not null default 'cross' check (margin_mode in ('cross','isolated')),
   isolated_margin     numeric not null default 0,
   isolated_wallet     numeric,
@@ -197,7 +200,7 @@ create index if not exists equity_history_account_ts_idx on public.equity_histor
 create table if not exists public.activity (
   id          uuid primary key default uuid_generate_v4(),
   account_id  uuid not null references public.accounts(id) on delete cascade,
-  type        text not null check (type in ('position','closed','order','challenge','payout','system')),
+  type        text not null check (type in ('position','closed','order','challenge','payout','system','breach')),
   title       text not null,
   sub         text not null,
   ts          bigint not null default (extract(epoch from now()) * 1000)::bigint,
@@ -207,7 +210,30 @@ create table if not exists public.activity (
 
 create index if not exists activity_account_ts_idx on public.activity(account_id, ts desc);
 
--- ── 10. Leaderboard View ──────────────────────────────────────────────────────
+-- ── 10. Payouts ─────────────────────────────────────────────────────────────
+create table if not exists public.payouts (
+  id              uuid primary key default uuid_generate_v4(),
+  account_id      uuid not null references public.accounts(id) on delete cascade,
+  user_id         uuid not null references public.profiles(id) on delete cascade,
+  amount          numeric not null check (amount > 0),
+  status          text not null default 'pending'
+    check (status in ('pending','approved','rejected','paid')),
+  method          text not null default 'crypto'
+    check (method in ('crypto','bank','paypal')),
+  wallet_address  text,
+  tx_hash         text,
+  admin_note      text,
+  requested_at    bigint not null default (extract(epoch from now()) * 1000)::bigint,
+  processed_at    bigint,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create index if not exists payouts_account_id_idx on public.payouts(account_id);
+create index if not exists payouts_user_id_idx on public.payouts(user_id);
+create index if not exists payouts_status_idx on public.payouts(status);
+
+-- ── 11. Leaderboard View ──────────────────────────────────────────────────────
 create or replace view public.leaderboard_view as
 select
   row_number() over (order by a.realized_pnl desc) as rank,

@@ -12,7 +12,7 @@ export default function TradeLayout({
   return (
     <div className="dark flex h-screen overflow-hidden bg-dark">
       {/* Sidebar */}
-      <Sidebar userRole="admin" />
+      <Sidebar />
 
       {/* Main trade area — offset by sidebar width */}
       <div className="flex flex-col flex-1 min-w-0 sm:pl-16 overflow-hidden">

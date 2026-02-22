@@ -16,7 +16,9 @@
 
 import { isServerSupabaseConfigured } from '@/lib/supabase/config'
 import { getBinancePrices, FALLBACK_SYMBOLS } from '@/lib/binance-prices'
-import { runRiskEngine } from '@/lib/risk-engine'
+// Risk engine removed from SSE — Railway Execution Engine handles SL/TP,
+// margin checks, drawdowns, and breach detection 24/7 independently.
+// This eliminates the dual-engine conflict and ensures atomic operations.
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -87,20 +89,6 @@ async function writePricesToSupabase() {
   }
 }
 
-// ─── Build bid/ask price map from Binance detailed data ─────────────────────
-
-function buildPriceMap(manager: ReturnType<typeof getBinancePrices>): Record<string, { bid: number; ask: number; last: number }> {
-  const map: Record<string, { bid: number; ask: number; last: number }> = {}
-  for (const entry of manager.getDetailed()) {
-    map[entry.symbol] = {
-      bid: entry.current_bid,
-      ask: entry.current_ask,
-      last: entry.current_price,
-    }
-  }
-  return map
-}
-
 // ─── SSE Route ──────────────────────────────────────────────────────────────
 
 export async function GET() {
@@ -135,10 +123,8 @@ export async function GET() {
             const data = `data: ${JSON.stringify({ prices, ts: Date.now(), source: 'binance' })}\n\n`
             controller.enqueue(encoder.encode(data))
 
-            // Periodically write to Supabase + run risk engine (SL/TP + margin + breach)
+            // Periodically write to Supabase (prices only — risk engine runs on Railway)
             await writePricesToSupabase()
-            const detailedPriceMap = buildPriceMap(manager)
-            await runRiskEngine(detailedPriceMap)
           } catch {
             clearInterval(interval)
             try { controller.close() } catch { /* already closed */ }

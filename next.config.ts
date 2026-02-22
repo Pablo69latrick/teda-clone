@@ -1,8 +1,21 @@
 import type { NextConfig } from "next";
 
+const TV_CDN = 'https://charting-library.tradingview-widget.com'
+
 const nextConfig: NextConfig = {
   // Enable gzip/brotli compression for all responses
   compress: true,
+
+  // Proxy TradingView charting library files to same-origin.
+  // REQUIRED: the charting library iframe needs window.parent access (same-origin).
+  async rewrites() {
+    return [
+      {
+        source: '/tv/:path*',
+        destination: `${TV_CDN}/:path*`,
+      },
+    ]
+  },
 
   // Optimise images
   images: {

@@ -13,7 +13,7 @@ export default function DashboardLayout({
         <DashboardRealtime />
 
         {/* Sidebar (desktop) */}
-        <Sidebar userRole="admin" />
+        <Sidebar />
 
         {/* Main content */}
         <main className="flex-1 min-h-dvh overflow-auto pb-safe custom-scrollbar bg-[#f5f5f5]">

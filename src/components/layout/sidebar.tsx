@@ -103,9 +103,12 @@ interface SidebarProps {
   userRole?: 'user' | 'admin'
 }
 
-export function Sidebar({ userRole = 'user' }: SidebarProps) {
+export function Sidebar({ userRole: userRoleProp }: SidebarProps) {
   const pathname = usePathname()
   const { user, signOut } = useAuth()
+
+  // Derive role from auth context (not hardcoded prop)
+  const userRole = userRoleProp ?? (user?.role as 'user' | 'admin') ?? 'user'
 
   // Derive initials from user name or email
   const initials = user

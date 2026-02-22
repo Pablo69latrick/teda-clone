@@ -12,11 +12,11 @@ export async function handleAdmin(req: NextRequest, apiPath: string): Promise<Ha
 
   const { createSupabaseServerClient, createSupabaseAdminClient } = await import('@/lib/supabase/server')
   const supabase = await createSupabaseServerClient()
-  const { data: { session } } = await supabase.auth.getSession()
-  if (!session) return NextResponse.json([], { status: 401 })
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json([], { status: 401 })
 
   const { data: profile } = await supabase
-    .from('profiles').select('role').eq('id', session.user.id).single()
+    .from('profiles').select('role').eq('id', user.id).single()
   if (profile?.role !== 'admin') return NextResponse.json([], { status: 403 })
 
   const admin = createSupabaseAdminClient()
@@ -261,7 +261,7 @@ export async function handleAdminWrite(req: NextRequest, apiPath: string): Promi
     return NextResponse.json({ success: true, user_id: body.user_id, banned: ban })
   }
 
-  // ── admin/force-close-position ────────────────────────────────────────────
+  // ── admin/force-close-position (ATOMIC via RPC) ─────────────────────────────
   if (apiPath === 'admin/force-close-position') {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
 
@@ -298,62 +298,31 @@ export async function handleAdminWrite(req: NextRequest, apiPath: string): Promi
     const closeFee = exitPrice * Number(pos.quantity) * 0.0007
     const now = Date.now()
 
-    await admin
-      .from('positions')
-      .update({
-        status:         'closed',
-        close_reason:   'admin_force',
-        exit_price:     exitPrice,
-        exit_timestamp: now,
-        realized_pnl:   realizedPnl,
-        total_fees:     Number(pos.trade_fees) + closeFee,
-        updated_at:     new Date().toISOString(),
-      })
-      .eq('id', body.position_id)
-
-    // Cancel linked orders
-    await admin
-      .from('orders')
-      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-      .eq('position_id', body.position_id)
-      .in('status', ['pending', 'partial'])
-
-    // Release margin + update account totals
-    const { data: acct } = await admin
-      .from('accounts')
-      .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
-      .eq('id', pos.account_id)
-      .single()
-
-    if (acct) {
-      const newAvailableMargin = Number(acct.available_margin) + Number(pos.isolated_margin) + realizedPnl - closeFee
-      const newTotalMarginReq  = Math.max(0, Number(acct.total_margin_required) - Number(pos.isolated_margin))
-      const newRealizedPnl     = Number(acct.realized_pnl) + realizedPnl
-      const newTotalPnl        = Number(acct.total_pnl) + realizedPnl
-      const newNetWorth        = Number(acct.net_worth) + realizedPnl - closeFee
-
-      await admin
-        .from('accounts')
-        .update({
-          available_margin:      newAvailableMargin,
-          total_margin_required: newTotalMarginReq,
-          realized_pnl:          newRealizedPnl,
-          total_pnl:             newTotalPnl,
-          net_worth:             newNetWorth,
-          updated_at:            new Date().toISOString(),
-        })
-        .eq('id', pos.account_id)
-    }
-
-    // Activity
-    await admin.from('activity').insert({
-      account_id: pos.account_id,
-      type:  'closed',
-      title: `[Admin] ${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} force-closed`,
-      sub:   `${Number(pos.quantity)} @ $${exitPrice.toFixed(2)}`,
-      ts:    now,
-      pnl:   realizedPnl,
+    // ── ATOMIC CLOSE via RPC ──
+    const { data: rpcResult, error: rpcErr } = await admin.rpc('close_position_atomic', {
+      p_position_id:        body.position_id,
+      p_account_id:         pos.account_id,
+      p_exit_price:         exitPrice,
+      p_exit_timestamp:     now,
+      p_realized_pnl:       realizedPnl,
+      p_close_fee:          closeFee,
+      p_existing_fees:      Number(pos.trade_fees),
+      p_isolated_margin:    Number(pos.isolated_margin),
+      p_close_reason:       'admin_force',
+      p_triggered_order_id: null,
+      p_symbol:             pos.symbol,
+      p_direction:          pos.direction,
+      p_quantity:           Number(pos.quantity),
     })
+
+    if (rpcErr) {
+      const msg = rpcErr.message ?? ''
+      if (msg.includes('not open') || msg.includes('not found')) {
+        return NextResponse.json({ error: 'Position already closed' }, { status: 409 })
+      }
+      console.error('[admin/force-close] RPC error:', rpcErr)
+      return NextResponse.json({ error: 'Failed to close position' }, { status: 500 })
+    }
 
     return NextResponse.json({
       success:      true,

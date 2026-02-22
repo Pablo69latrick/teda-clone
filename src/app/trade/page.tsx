@@ -36,9 +36,6 @@ export default function TradePage() {
   const [chartFullscreen, setChartFullscreen] = useState(false)
   const [timeframe, setTimeframe] = useState<string>('1h')
 
-  // ── TradingView tools sidebar (left-side drawing tools) ───────────────────
-  const [showToolsSidebar, setShowToolsSidebar] = useState(true)
-
   // ── Right panel state ─────────────────────────────────────────────────────
   const [panelOpen, setPanelOpen] = useState(true)
   const [activeTab, setActiveTab] = useState<'watchlist' | 'orders'>('watchlist')
@@ -58,8 +55,6 @@ export default function TradePage() {
       if (tab === 'watchlist' || tab === 'orders') setActiveTab(tab)
       const tf = localStorage.getItem('vp-timeframe')
       if (tf) setTimeframe(tf)
-      const ts = localStorage.getItem('vp-tools-sidebar')
-      if (ts !== null) setShowToolsSidebar(ts === '1')
     } catch { /* SSR / storage unavailable */ }
   }, [])
 
@@ -76,10 +71,6 @@ export default function TradePage() {
   useEffect(() => {
     try { localStorage.setItem('vp-timeframe', timeframe) } catch {}
   }, [timeframe])
-  useEffect(() => {
-    try { localStorage.setItem('vp-tools-sidebar', showToolsSidebar ? '1' : '0') } catch {}
-  }, [showToolsSidebar])
-
   // Use the first active account from the session.
   const { data: accounts } = useAccounts()
   const account     = accounts?.[0]
@@ -87,11 +78,6 @@ export default function TradePage() {
 
   // Connect SSE price stream
   usePriceStream(accountId)
-
-  // ── Toggle TradingView sidebar (CSS margin-shift — no API needed) ────────
-  const toggleTVSidebar = useCallback(() => {
-    setShowToolsSidebar(v => !v)
-  }, [])
 
   // ── Macro key handler (shared between keydown + postMessage) ──────────────
   const handleMacroKey = useCallback((key: string) => {
@@ -108,10 +94,6 @@ export default function TradePage() {
       case 'S':
         document.querySelector<HTMLButtonElement>('[data-action="short"]')?.click()
         break
-      case 'w':
-      case 'W':
-        toggleTVSidebar()
-        break
       case 'a':
       case 'A':
         setPanelOpen(v => !v)
@@ -126,7 +108,7 @@ export default function TradePage() {
         setTfBuffer('')
         break
     }
-  }, [toggleTVSidebar])
+  }, [])
 
   // ── Keyboard shortcuts (window-level) ─────────────────────────────────────
   useEffect(() => {
@@ -200,19 +182,19 @@ export default function TradePage() {
           <div className="h-full w-full rounded-lg overflow-hidden flex flex-col">
 
             {/* ── Chart + right panel — FLEX (chart resizes with panel) ──── */}
-            <div className="flex-1 min-h-0 flex">
+            {/* Fullscreen applies to the ENTIRE row so the right panel stays accessible */}
+            <div className={cn(
+              'flex-1 min-h-0 flex',
+              chartFullscreen && 'fixed inset-0 z-50 bg-black',
+            )}>
 
               {/* CHART — fills remaining space, resizes when panel toggles */}
-              <div className={cn(
-                'flex-1 min-w-0 relative',
-                chartFullscreen && 'fixed inset-0 z-50',
-              )}>
+              <div className="flex-1 min-w-0 relative">
                 <div className="absolute inset-0">
                   <ChartPanel
                     symbol={selectedSymbol}
                     timeframe={timeframe}
-                    showToolsSidebar={showToolsSidebar}
-                    onToggleToolsSidebar={toggleTVSidebar}
+                    accountId={accountId}
                     onFullscreen={() => setChartFullscreen(v => !v)}
                     isFullscreen={chartFullscreen}
                   />

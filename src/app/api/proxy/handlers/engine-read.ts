@@ -297,6 +297,34 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
 
     const acctStatus = account.account_status ?? 'active'
 
+    // ── PHASE TRANSITION CHECK ──────────────────────────────────────────────
+    // If the account meets pass conditions and is still active, attempt to advance
+    let phaseAdvanced = null
+    if (acctStatus === 'active' && currentProfit >= (rule.profit_target ?? 0.08) && (tradingDays ?? 0) >= (rule.min_trading_days ?? 5)) {
+      try {
+        const { data: advanceResult } = await admin.rpc('advance_phase_if_passed', {
+          p_account_id: accountId,
+        })
+        if (advanceResult?.advanced) {
+          phaseAdvanced = advanceResult
+          // Re-fetch account after phase advancement
+          const { data: updatedAccount } = await admin
+            .from('accounts').select('account_status, current_phase, realized_pnl, net_worth')
+            .eq('id', accountId).single()
+          if (updatedAccount) {
+            account.account_status = updatedAccount.account_status
+            account.current_phase = updatedAccount.current_phase
+            account.realized_pnl = updatedAccount.realized_pnl
+            account.net_worth = updatedAccount.net_worth
+          }
+        }
+      } catch (err) {
+        console.error('[challenge-status] phase advance error:', err)
+      }
+    }
+
+    const finalStatus = account.account_status ?? 'active'
+
     return NextResponse.json({
       account_id: accountId,
       current_phase: account.current_phase ?? 1,
@@ -311,9 +339,10 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
         : 0,
       trading_days: tradingDays ?? 0,
       min_trading_days: rule.min_trading_days ?? 5,
-      is_passed: acctStatus === 'passed' || acctStatus === 'funded',
-      is_breached: acctStatus === 'breached',
+      is_passed: finalStatus === 'passed' || finalStatus === 'funded',
+      is_breached: finalStatus === 'breached',
       breach_reason: account.breach_reason ?? null,
+      phase_advanced: phaseAdvanced,
     })
   }
 

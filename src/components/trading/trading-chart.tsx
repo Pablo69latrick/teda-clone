@@ -1,45 +1,39 @@
 'use client'
 
 /**
- * TradingChart — TradingView Advanced Charts embed via tv.js.
+ * TradingChart — TradingView Advanced Charts (Charting Library).
  *
- * Uses `new TradingView.widget()` (the free embed widget) which provides:
- *   - Native drawing-tools sidebar
- *   - Native header toolbar (timeframes, indicators, chart type)
- *   - Dark theme, overrides, enabled/disabled features
- *   - Local storage persistence for chart settings
+ * Uses the REAL charting library from charting-library.tradingview-widget.com,
+ * NOT the free embed widget (tv.js).
  *
- * Important: tv.js is the **embed widget** wrapper, NOT the charting library.
- * It does NOT have .chart(), .setSymbol(), .setResolution(), etc.
- * Symbol/timeframe changes require widget recreation (fast — just a new iframe).
- *
- * The sidebar is toggled via CSS margin-shift (the iframe is a single unit,
- * we shift it left to hide the 53px sidebar off-screen).
+ * All TradingView files are proxied via /tv/* → charting-library.tradingview-widget.com/*
+ * This is REQUIRED because the charting library iframe needs window.parent access (same-origin).
  */
 
-import { useEffect, useRef, memo } from 'react'
+import { useEffect, useRef, useMemo, memo } from 'react'
+import { createSupabaseBrowserClient } from '@/lib/supabase/client'
+import { isBrowserSupabaseConfigured } from '@/lib/supabase/config'
+import { createChartSaveAdapter } from '@/lib/chart-save-adapter'
 
-// ─── Global type for the tv.js library ──────────────────────────────────────
+// ─── Global types ────────────────────────────────────────────────────────────
 
 declare global {
   interface Window {
     TradingView: any
+    TradingViewDatafeed: any
   }
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/** Width of TradingView's native drawing-tools sidebar (px) */
-export const SIDEBAR_WIDTH = 53
-
-const CONTAINER_ID = 'tradingview-widget-container'
+const CONTAINER_ID = 'tradingview-chart-container'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 interface TradingChartProps {
   symbol: string
   timeframe?: string
-  showToolsSidebar?: boolean
+  accountId: string
   /** Called once when the widget is ready */
   onWidgetReady?: (widget: any) => void
 }
@@ -62,122 +56,215 @@ const TV_INTERVALS: Record<string, string> = {
   '1d':  'D',
 }
 
+// ─── Script loader ──────────────────────────────────────────────────────────
+
+function loadScript(src: string, id: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById(id)
+    if (existing) {
+      if (
+        (id === 'tv-charting-lib' && window.TradingView?.widget) ||
+        (id === 'tv-datafeed' && window.TradingViewDatafeed?.TradingViewDatafeed)
+      ) {
+        resolve()
+      } else {
+        existing.addEventListener('load', () => resolve(), { once: true })
+      }
+      return
+    }
+    const s = document.createElement('script')
+    s.id = id
+    s.src = src
+    s.async = true
+    s.onload = () => resolve()
+    s.onerror = () => reject(new Error(`Failed to load ${src}`))
+    document.head.appendChild(s)
+  })
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 function TradingChart({
   symbol,
   timeframe = '1h',
-  showToolsSidebar = true,
+  accountId,
   onWidgetReady,
 }: TradingChartProps) {
   const widgetRef  = useRef<any>(null)
+  const readyRef   = useRef(false)
   const onReadyRef = useRef(onWidgetReady)
   onReadyRef.current = onWidgetReady
 
-  // ── Create / recreate widget when symbol or timeframe changes ───────────
+  // Track current prop values for sync after onChartReady
+  const currentSymbolRef    = useRef(symbol)
+  const currentTimeframeRef = useRef(timeframe)
+  currentSymbolRef.current    = symbol
+  currentTimeframeRef.current = timeframe
+
+  // ── Supabase save/load adapter (recreated when account changes) ──────────
+  const saveLoadAdapter = useMemo(() => {
+    if (!isBrowserSupabaseConfigured()) return null
+    const supabase = createSupabaseBrowserClient()
+    return createChartSaveAdapter(supabase, accountId)
+  }, [accountId])
+
+  // ── Create widget ONCE on mount ───────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
-    const SCRIPT_ID = 'tradingview-tv-js'
+    const initSymbol    = currentSymbolRef.current
+    const initTimeframe = currentTimeframeRef.current
 
-    function createWidget() {
-      if (cancelled) return
-      if (!window.TradingView?.widget) {
-        console.error('[TV] window.TradingView.widget not available')
-        return
-      }
+    async function init() {
+      try {
+        await loadScript(
+          `/tv/charting_library/charting_library.standalone.js`,
+          'tv-charting-lib'
+        )
+        await loadScript(
+          `/tv/datafeeds/tv-datafeed.js`,
+          'tv-datafeed'
+        )
 
-      console.log('[TV] Creating widget —', symbol, timeframe)
-
-      // TradingView.widget() clears the container (innerHTML = "") before
-      // inserting the new iframe, so no manual cleanup needed.
-      const w = new window.TradingView.widget({
-        container_id: CONTAINER_ID,
-        autosize:     true,
-        symbol:       toTVSymbol(symbol),
-        interval:     TV_INTERVALS[timeframe] ?? '60',
-        timezone:     'Etc/UTC',
-        theme:        'dark',
-        style:        '1',
-        locale:       'fr',
-
-        toolbar_bg: '#131722',
-
-        // ✅ Native drawing toolbar — the real TradingView tools
-        hide_side_toolbar: false,
-
-        // ✅ Native header — TradingView's own toolbar (Block 2)
-        hide_top_toolbar: false,
-
-        enable_publishing:   false,
-        allow_symbol_change: false,
-        save_image:          false,
-
-        enabled_features: [
-          'use_localstorage_for_settings',
-          'save_chart_properties_to_local_storage',
-          'side_toolbar_in_fullscreen_mode',
-          'header_in_fullscreen_mode',
-        ],
-
-        disabled_features: [
-          'header_symbol_search',
-          'header_compare',
-          'display_market_status',
-          'popup_hints',
-          'create_volume_indicator_by_default',
-        ],
-
-        overrides: {
-          'paneProperties.background':               '#0a0a0a',
-          'paneProperties.backgroundType':           'solid',
-          'paneProperties.vertGridProperties.color': 'rgba(10,10,10,0)',
-          'paneProperties.horzGridProperties.color': 'rgba(10,10,10,0)',
-        },
-
-        loading_screen: { backgroundColor: '#0a0a0a' },
-      })
-
-      widgetRef.current = w
-
-      // tv.js uses .ready(), NOT .onChartReady()
-      w.ready(() => {
         if (cancelled) return
-        console.log('[TV] ✅ Chart ready')
-        onReadyRef.current?.(w)
-      })
+
+        if (!window.TradingView?.widget || !window.TradingViewDatafeed?.TradingViewDatafeed) {
+          console.error('[TV] Libraries not available after loading')
+          return
+        }
+
+        console.log('[TV] Creating Advanced Charts widget —', initSymbol, initTimeframe)
+
+        const datafeed = new window.TradingViewDatafeed.TradingViewDatafeed()
+
+        const w = new window.TradingView.widget({
+          container:    CONTAINER_ID,
+          datafeed:     datafeed,
+          library_path: `/tv/charting_library/`,
+          symbol:       toTVSymbol(initSymbol),
+          interval:     TV_INTERVALS[initTimeframe] ?? '60',
+          timezone:     'Etc/UTC',
+          theme:        'dark',
+          locale:       'fr',
+          autosize:     true,
+
+          toolbar_bg: '#000000',
+
+          // Native drawing toolbar + header
+          hide_side_toolbar: false,
+          hide_top_toolbar: false,
+
+          enable_publishing:   false,
+          allow_symbol_change: false,
+          save_image:          false,
+
+          // ── Server-side chart persistence ──────────────────────────────
+          ...(saveLoadAdapter && {
+            save_load_adapter: saveLoadAdapter,
+            auto_save_delay: 5,
+          }),
+
+          enabled_features: [
+            'use_localstorage_for_settings',
+            'save_chart_properties_to_local_storage',
+            'side_toolbar_in_fullscreen_mode',
+            'header_in_fullscreen_mode',
+            'show_symbol_logos',
+            'show_exchange_logos',
+            'items_favoriting',
+            'study_templates',
+            'drawing_templates',
+            'disable_resolution_rebuild',
+            ...(saveLoadAdapter ? ['load_last_chart'] : []),
+          ],
+
+          disabled_features: [
+            'header_symbol_search',
+            'header_compare',
+            'display_market_status',
+            'popup_hints',
+            'create_volume_indicator_by_default',
+          ],
+
+          overrides: {
+            'paneProperties.background':               '#000000',
+            'paneProperties.backgroundType':           'solid',
+            'paneProperties.vertGridProperties.color': 'rgba(0,0,0,0)',
+            'paneProperties.horzGridProperties.color': 'rgba(0,0,0,0)',
+          },
+
+          loading_screen: { backgroundColor: '#000000' },
+        })
+
+        widgetRef.current = w
+
+        w.onChartReady(() => {
+          if (cancelled) return
+          readyRef.current = true
+          console.log('[TV] Advanced Charts ready')
+
+          const curSym = toTVSymbol(currentSymbolRef.current)
+          const curTf  = TV_INTERVALS[currentTimeframeRef.current] ?? '60'
+          if (curSym !== toTVSymbol(initSymbol)) {
+            try { w.chart().setSymbol(curSym) } catch {}
+          }
+          if (curTf !== (TV_INTERVALS[initTimeframe] ?? '60')) {
+            try { w.chart().setResolution(curTf) } catch {}
+          }
+
+          // Bridge keyboard events from the iframe to the parent window.
+          // The iframe is same-origin (proxied), so we can access its contentDocument.
+          // This ensures macros (F, B, S, W, A, Q, Escape) work even when the iframe has focus.
+          try {
+            const iframe = document.querySelector(`#${CONTAINER_ID} iframe`) as HTMLIFrameElement
+            if (iframe?.contentDocument) {
+              iframe.contentDocument.addEventListener('keydown', (e: KeyboardEvent) => {
+                const tag = (e.target as HTMLElement)?.tagName
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+                window.postMessage({ type: 'tv-keydown', key: e.key }, '*')
+              })
+            }
+          } catch {}
+
+          onReadyRef.current?.(w)
+        })
+      } catch (err) {
+        console.error('[TV] Init error:', err)
+      }
     }
 
-    // Load tv.js script once, then create widget
-    const existing = document.getElementById(SCRIPT_ID)
-    if (!existing) {
-      const s  = document.createElement('script')
-      s.id     = SCRIPT_ID
-      s.src    = 'https://s3.tradingview.com/tv.js'
-      s.async  = true
-      s.onload = () => { console.log('[TV] Script loaded'); createWidget() }
-      s.onerror = () => console.error('[TV] ❌ Failed to load tv.js')
-      document.head.appendChild(s)
-    } else if (window.TradingView?.widget) {
-      createWidget()
-    } else {
-      existing.addEventListener('load', createWidget, { once: true })
-    }
+    init()
 
     return () => {
       cancelled = true
+      readyRef.current = false
       if (widgetRef.current) {
         try { widgetRef.current.remove() } catch {}
         widgetRef.current = null
       }
     }
-  }, [symbol, timeframe])
+  }, [accountId, saveLoadAdapter]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── CSS margin-shift to toggle the native sidebar ──────────────────────
-  // When showToolsSidebar is false, shift the iframe left by 53px so the
-  // drawing toolbar slides off-screen. The parent must have overflow:hidden.
-  const shiftStyle = showToolsSidebar
-    ? { marginLeft: 0, width: '100%' }
-    : { marginLeft: -SIDEBAR_WIDTH, width: `calc(100% + ${SIDEBAR_WIDTH}px)` }
+  // ── Symbol changes via API ────────────────────────────────────────────────
+  useEffect(() => {
+    if (readyRef.current && widgetRef.current) {
+      try {
+        widgetRef.current.chart().setSymbol(toTVSymbol(symbol))
+      } catch (err) {
+        console.error('[TV] setSymbol error:', err)
+      }
+    }
+  }, [symbol])
+
+  // ── Timeframe changes via API ─────────────────────────────────────────────
+  useEffect(() => {
+    if (readyRef.current && widgetRef.current) {
+      try {
+        widgetRef.current.chart().setResolution(TV_INTERVALS[timeframe] ?? '60')
+      } catch (err) {
+        console.error('[TV] setResolution error:', err)
+      }
+    }
+  }, [timeframe])
 
   return (
     <div
@@ -189,8 +276,6 @@ function TradingChart({
         right: 0,
         bottom: 0,
         height: '100%',
-        transition: 'margin-left 0.3s ease, width 0.3s ease',
-        ...shiftStyle,
       }}
     />
   )

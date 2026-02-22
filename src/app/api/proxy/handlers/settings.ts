@@ -46,9 +46,26 @@ export async function handleSettings(req: NextRequest, apiPath: string): Promise
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // Require current password for verification
+    const oldPassword = body.old_password
+    if (typeof oldPassword !== 'string' || oldPassword.length < 1) {
+      return NextResponse.json({ error: 'Current password is required' }, { status: 400 })
+    }
+
     const newPassword = body.new_password
     if (typeof newPassword !== 'string' || newPassword.length < 8) {
-      return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
+      return NextResponse.json({ error: 'New password must be at least 8 characters' }, { status: 400 })
+    }
+
+    // Verify current password by attempting re-authentication
+    if (user.email) {
+      const { error: verifyErr } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: oldPassword as string,
+      })
+      if (verifyErr) {
+        return NextResponse.json({ error: 'Current password is incorrect' }, { status: 403 })
+      }
     }
 
     const { error } = await supabase.auth.updateUser({ password: newPassword })

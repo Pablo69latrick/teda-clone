@@ -397,7 +397,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     }, { status: 201 })
   }
 
-  // ── engine/close-position ───────────────────────────────────────────────────
+  // ── engine/close-position (ATOMIC via RPC) ─────────────────────────────────
   if (apiPath === 'engine/close-position') {
     const t0 = Date.now()
     const body = await req.json().catch(() => ({}))
@@ -457,76 +457,33 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
 
     const now = Date.now()
 
-    const { error: closeErr } = await admin
-      .from('positions')
-      .update({
-        status:       'closed',
-        close_reason: 'manual',
-        exit_price:   exitPrice.toNumber(),
-        exit_timestamp: now,
-        realized_pnl: realizedPnl.toNumber(),
-        total_fees:   D(pos.trade_fees).plus(closeFee).toNumber(),
-        updated_at:   new Date().toISOString(),
-      })
-      .eq('id', positionId)
+    // ── ATOMIC CLOSE via RPC (single transaction with FOR UPDATE) ──
+    const { data: rpcResult, error: rpcErr } = await admin.rpc('close_position_atomic', {
+      p_position_id:        positionId,
+      p_account_id:         pos.account_id,
+      p_exit_price:         exitPrice.toNumber(),
+      p_exit_timestamp:     now,
+      p_realized_pnl:       realizedPnl.toNumber(),
+      p_close_fee:          closeFee.toNumber(),
+      p_existing_fees:      D(pos.trade_fees).toNumber(),
+      p_isolated_margin:    D(pos.isolated_margin).toNumber(),
+      p_close_reason:       'manual',
+      p_triggered_order_id: null,
+      p_symbol:             pos.symbol,
+      p_direction:          pos.direction,
+      p_quantity:           quantity.toNumber(),
+    })
 
-    if (closeErr) {
-      console.error('[close-position] update error:', closeErr)
+    if (rpcErr) {
+      const msg = rpcErr.message ?? ''
+      if (msg.includes('not open') || msg.includes('not found')) {
+        return NextResponse.json({ error: 'Position already closed' }, { status: 409 })
+      }
+      console.error('[close-position] RPC error:', rpcErr)
       return NextResponse.json({ error: 'Failed to close position. Please try again.' }, { status: 500 })
     }
 
-    // ── PARALLEL: cancel SL/TP + fetch account + fetch instrument (all at once) ──
-    const [, acctRes, instrRes] = await Promise.all([
-      admin.from('orders')
-        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-        .eq('position_id', positionId)
-        .in('status', ['pending', 'partial']),
-      admin.from('accounts')
-        .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
-        .eq('id', pos.account_id).single(),
-      admin.from('instruments').select('price_decimals').eq('symbol', pos.symbol).single(),
-    ])
-
-    const acct = acctRes.data
-    const pDec = instrRes.data?.price_decimals ?? 2
-
-    // Update account + equity history + activity in parallel
-    const pnlStr = realizedPnl.gte(0) ? `+$${realizedPnl.toFixed(2)}` : `-$${realizedPnl.abs().toFixed(2)}`
-    const postCloseOps: PromiseLike<unknown>[] = []
-
-    if (acct) {
-      const isolatedMargin = D(pos.isolated_margin)
-      const newAvailableMargin = D(acct.available_margin).plus(isolatedMargin).plus(realizedPnl).minus(closeFee)
-      const newTotalMarginReq  = Decimal.max(0, D(acct.total_margin_required).minus(isolatedMargin))
-      const newRealizedPnl     = D(acct.realized_pnl).plus(realizedPnl)
-      const newTotalPnl        = D(acct.total_pnl).plus(realizedPnl)
-      const newNetWorth        = D(acct.net_worth).plus(realizedPnl).minus(closeFee)
-
-      postCloseOps.push(
-        admin.from('accounts').update({
-          available_margin: newAvailableMargin.toNumber(), total_margin_required: newTotalMarginReq.toNumber(),
-          realized_pnl: newRealizedPnl.toNumber(), total_pnl: newTotalPnl.toNumber(), net_worth: newNetWorth.toNumber(),
-          updated_at: new Date().toISOString(),
-        }).eq('id', pos.account_id).then(),
-        admin.from('equity_history').insert({
-          account_id: pos.account_id, ts: now,
-          equity: newAvailableMargin.toNumber(), pnl: realizedPnl.toNumber(),
-        }).then(),
-      )
-    }
-
-    postCloseOps.push(
-      admin.from('activity').insert({
-        account_id: pos.account_id, type: 'closed',
-        title: `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} closed`,
-        sub: `${quantity.toNumber()} @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
-        ts: now, pnl: realizedPnl.toNumber(),
-      }).then()
-    )
-
-    await Promise.all(postCloseOps)
-
-    console.log(`[close-position] total: ${Date.now() - t0}ms`)
+    console.log(`[close-position] atomic: ${Date.now() - t0}ms`)
     return NextResponse.json({
       success:       true,
       position_id:   positionId,
@@ -536,7 +493,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     })
   }
 
-  // ── engine/partial-close ────────────────────────────────────────────────────
+  // ── engine/partial-close (ATOMIC via RPC) ──────────────────────────────────
   if (apiPath === 'engine/partial-close') {
     const body = await req.json().catch(() => ({}))
 
@@ -566,8 +523,7 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     }
 
     const [posAccountRes, priceRes2] = await Promise.all([
-      admin.from('accounts').select('id, user_id, available_margin, realized_pnl')
-        .eq('id', pos.account_id).single(),
+      admin.from('accounts').select('id, user_id').eq('id', pos.account_id).single(),
       admin.from('price_cache').select('current_price, current_bid, current_ask')
         .eq('symbol', pos.symbol).single(),
     ])
@@ -591,89 +547,44 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       : D(priceRow?.current_ask ?? priceRow?.current_price ?? pos.entry_price)
     const leverage = D(pos.leverage)
 
-    const priceDiff     = pos.direction === 'long' ? exitPrice.minus(entryPrice) : entryPrice.minus(exitPrice)
-    const partialPnl    = priceDiff.times(closeQty).times(leverage)
-    const closeFee      = exitPrice.times(closeQty).times(FEE_RATE)
+    const priceDiff      = pos.direction === 'long' ? exitPrice.minus(entryPrice) : entryPrice.minus(exitPrice)
+    const partialPnl     = priceDiff.times(closeQty).times(leverage)
+    const closeFee       = exitPrice.times(closeQty).times(FEE_RATE)
     const marginFraction = closeQty.div(totalQty)
     const isolatedMargin = D(pos.isolated_margin)
     const releasedMargin = isolatedMargin.times(marginFraction)
     const remainingQty   = totalQty.minus(closeQty)
 
-    const now = Date.now()
+    // ── ATOMIC PARTIAL CLOSE via RPC ──────────────────────────────────────
+    const { data: rpcResult, error: rpcErr } = await admin.rpc('partial_close_atomic', {
+      p_position_id:     positionId,
+      p_account_id:      pos.account_id,
+      p_close_qty:       closeQty.toNumber(),
+      p_exit_price:      exitPrice.toNumber(),
+      p_partial_pnl:     partialPnl.toNumber(),
+      p_close_fee:       closeFee.toNumber(),
+      p_released_margin: releasedMargin.toNumber(),
+      p_symbol:          pos.symbol,
+      p_direction:       pos.direction,
+    })
 
-    const { error: updateErr } = await admin
-      .from('positions')
-      .update({
-        quantity:        remainingQty.toNumber(),
-        isolated_margin: isolatedMargin.minus(releasedMargin).toNumber(),
-        realized_pnl:    partialPnl.toNumber(),
-        total_fees:      D(pos.trade_fees).plus(closeFee).toNumber(),
-        updated_at:      new Date().toISOString(),
-      })
-      .eq('id', positionId)
-
-    if (updateErr) {
-      console.error('[partial-close] update error:', updateErr)
+    if (rpcErr) {
+      const msg = rpcErr.message ?? ''
+      if (msg.includes('not open') || msg.includes('not found')) {
+        return NextResponse.json({ error: 'Position already closed' }, { status: 409 })
+      }
+      console.error('[partial-close] RPC error:', rpcErr)
       return NextResponse.json({ error: 'Failed to partially close position. Please try again.' }, { status: 500 })
     }
 
-    const { data: acctPartial } = await admin
-      .from('accounts')
-      .select('available_margin, realized_pnl, total_margin_required, net_worth, total_pnl')
-      .eq('id', pos.account_id)
-      .single()
-
-    if (acctPartial) {
-      const newAvailableMargin = D(acctPartial.available_margin).plus(releasedMargin).plus(partialPnl).minus(closeFee)
-      const newTotalMarginReq  = Decimal.max(0, D(acctPartial.total_margin_required).minus(releasedMargin))
-      const newRealizedPnl     = D(acctPartial.realized_pnl).plus(partialPnl)
-      const newTotalPnl        = D(acctPartial.total_pnl).plus(partialPnl)
-      const newNetWorth        = D(acctPartial.net_worth).plus(partialPnl).minus(closeFee)
-
-      await admin
-        .from('accounts')
-        .update({
-          available_margin:      newAvailableMargin.toNumber(),
-          total_margin_required: newTotalMarginReq.toNumber(),
-          realized_pnl:          newRealizedPnl.toNumber(),
-          total_pnl:             newTotalPnl.toNumber(),
-          net_worth:             newNetWorth.toNumber(),
-          updated_at:            new Date().toISOString(),
-        })
-        .eq('id', pos.account_id)
-    }
-
-    const baseMargin = acctPartial
-      ? D(acctPartial.available_margin).plus(releasedMargin).plus(partialPnl).minus(closeFee)
-      : D(posAccount.available_margin).plus(releasedMargin).plus(partialPnl).minus(closeFee)
-    await admin.from('equity_history').insert({
-      account_id: pos.account_id,
-      ts:         now,
-      equity:     baseMargin.toNumber(),
-      pnl:        partialPnl.toNumber(),
-    })
-
-    const { data: instr } = await admin
-      .from('instruments').select('price_decimals').eq('symbol', pos.symbol).single()
-    const pDec   = instr?.price_decimals ?? 2
-    const pnlStr = partialPnl.gte(0) ? `+$${partialPnl.toFixed(2)}` : `-$${partialPnl.abs().toFixed(2)}`
-    await admin.from('activity').insert({
-      account_id: pos.account_id,
-      type:       'closed',
-      title:      `${pos.direction === 'long' ? 'Long' : 'Short'} ${pos.symbol} partial close`,
-      sub:        `${closeQty.toNumber()} lots @ $${exitPrice.toFixed(pDec)} · ${pnlStr}`,
-      ts:         now,
-      pnl:        partialPnl.toNumber(),
-    })
-
     return NextResponse.json({
-      success:        true,
-      position_id:    positionId,
+      success:         true,
+      position_id:     positionId,
       closed_quantity: closeQty.toNumber(),
-      remaining_qty:  remainingQty.toNumber(),
-      exit_price:     exitPrice.toNumber(),
-      realized_pnl:   partialPnl.toNumber(),
-      close_fee:      closeFee.toNumber(),
+      remaining_qty:   remainingQty.toNumber(),
+      exit_price:      exitPrice.toNumber(),
+      realized_pnl:    partialPnl.toNumber(),
+      close_fee:       closeFee.toNumber(),
     })
   }
 
@@ -886,11 +797,11 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    // Verify account ownership (admin bypasses RLS)
+    // Verify account ownership + fetch template for profit split
     const admin = createSupabaseAdminClient()
     const { data: account } = await admin
       .from('accounts')
-      .select('id, user_id, realized_pnl, starting_balance, account_status')
+      .select('id, user_id, realized_pnl, starting_balance, account_status, challenge_template_id, current_phase, challenge_templates(phase_sequence)')
       .eq('id', input.account_id)
       .single()
 
@@ -905,9 +816,15 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       return NextResponse.json({ error: 'Payouts are only available for funded accounts' }, { status: 422 })
     }
 
-    // ── DECIMAL.JS: profit split calculation ──────────────────────────────
+    // ── DECIMAL.JS: profit split from template (not hardcoded) ─────────────
+    const template = account.challenge_templates as unknown as { phase_sequence: Array<Record<string, number>> } | null
+    const phaseSequence = template?.phase_sequence ?? []
+    // For funded accounts, use the last phase's profit_split (or default 80%)
+    const lastPhase = phaseSequence[phaseSequence.length - 1]
+    const profitSplitPct = new Decimal(lastPhase?.profit_split ?? 0.80)
+
     const amount = new Decimal(input.amount)
-    const availableProfit = Decimal.max(0, D(account.realized_pnl).times(PROFIT_SPLIT))
+    const availableProfit = Decimal.max(0, D(account.realized_pnl).times(profitSplitPct))
     if (amount.gt(availableProfit)) {
       return NextResponse.json({
         error: `Amount exceeds available payout balance ($${availableProfit.toFixed(2)})`
