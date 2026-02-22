@@ -1,0 +1,21 @@
+{
+  "name": "TEDA — Get Trained & Funded",
+  "short_name": "TEDA",
+  "description": "The professional prop trading platform. Get trained, get funded, and scale your trading career.",
+  "start_url": "/dashboard/overview",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    {
+      "src": "/landing/teda-logo.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "/landing/teda-logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ]
+}

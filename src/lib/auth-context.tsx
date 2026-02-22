@@ -125,7 +125,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!res.ok) throw new Error(data?.message ?? data?.error ?? 'Invalid email or password.')
         setState(s => ({ ...s, user: data.user, submitting: false }))
       }
-      router.push('/dashboard/overview')
+      // Redirect to the page they originally wanted (from ?next= param) or dashboard
+      const params = new URLSearchParams(window.location.search)
+      const next = params.get('next')
+      router.push(next && next.startsWith('/') ? next : '/dashboard/overview')
     } catch (err) {
       setState(s => ({
         ...s,

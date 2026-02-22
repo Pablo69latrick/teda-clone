@@ -1,7 +1,7 @@
 import { Sidebar } from '@/components/layout/sidebar'
 
 export const metadata = {
-  title: 'Trade | VerticalProp',
+  title: 'Trade | TEDA',
 }
 
 export default function TradeLayout({
