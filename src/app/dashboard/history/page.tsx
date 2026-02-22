@@ -4,7 +4,8 @@ import { useState, useMemo } from 'react'
 import { Search, History, Filter, ArrowUpDown } from 'lucide-react'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import { useAccounts, useClosedPositions } from '@/lib/hooks'
+import { useClosedPositions } from '@/lib/hooks'
+import { useActiveAccount } from '@/lib/use-active-account'
 import type { Position } from '@/types'
 
 function Skeleton({ className }: { className?: string }) {
@@ -21,8 +22,7 @@ export default function HistoryPage() {
   const [sort, setSort] = useState<SortKey>('exit_timestamp')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  const { data: accounts, isLoading: loadingAccounts } = useAccounts()
-  const account = accounts?.[0]
+  const { activeAccount: account, isLoading: loadingAccounts } = useActiveAccount()
   const { data: closedRaw, isLoading: loadingClosed } = useClosedPositions(account?.id)
 
   const loading = loadingAccounts || loadingClosed

@@ -10,9 +10,10 @@ import {
 } from 'lucide-react'
 import { cn, formatCurrency, formatPercent } from '@/lib/utils'
 import {
-  useAccounts, useTradingData, useChallengeStatus,
+  useTradingData, useChallengeStatus,
   useEquityHistory, useActivity,
 } from '@/lib/hooks'
+import { useActiveAccount } from '@/lib/use-active-account'
 import type { EquityPoint, ActivityItem } from '@/lib/hooks'
 
 // ─── Skeleton ──────────────────────────────────────────────────────────────────
@@ -208,8 +209,7 @@ const NAV_TABS = [
 
 // ─── Page ───────────────────────────────────────────────────────────────────────
 export default function OverviewPage() {
-  const { data: accounts, isLoading: loadingAccounts } = useAccounts()
-  const account = accounts?.[0]
+  const { activeAccount: account, isLoading: loadingAccounts } = useActiveAccount()
   const { data: tradingData, isLoading: loadingTrading } = useTradingData(account?.id)
   const { data: challengeStatus, isLoading: loadingChallenge } = useChallengeStatus(account?.id)
   const { data: equityHistory, isLoading: loadingEquity } = useEquityHistory(account?.id)

@@ -134,6 +134,23 @@ export async function handleEngineRead(req: NextRequest, apiPath: string): Promi
     })))
   }
 
+  // ── actions/challenge-templates (user-facing catalog) ────────────────────────
+  if (apiPath === 'actions/challenge-templates') {
+    const admin = createSupabaseAdminClient()
+    const { data: templates } = await admin
+      .from('challenge_templates')
+      .select('*')
+      .eq('is_active', true)
+      .eq('status', 'active')
+      .order('starting_balance', { ascending: true })
+
+    return NextResponse.json((templates ?? []).map(t => ({
+      ...t,
+      created_at: toEpochMs(t.created_at),
+      updated_at: toEpochMs(t.updated_at),
+    })))
+  }
+
   // ── engine/instruments ──────────────────────────────────────────────────────
   // Public data — no auth needed, uses admin client (no RLS).
   if (apiPath === 'engine/instruments') {

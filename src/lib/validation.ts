@@ -85,6 +85,14 @@ export const ModifySLTPSchema = z.object({
 
 export type ModifySLTPInput = z.infer<typeof ModifySLTPSchema>
 
+// ─── engine/purchase-challenge ─────────────────────────────────────────────
+
+export const PurchaseChallengeSchema = z.object({
+  template_id: uuid,
+})
+
+export type PurchaseChallengeInput = z.infer<typeof PurchaseChallengeSchema>
+
 // ─── Helper: format Zod errors into a user-friendly string ─────────────────
 
 export function formatZodErrors(error: z.ZodError): string {

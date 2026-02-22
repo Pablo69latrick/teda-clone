@@ -9,7 +9,8 @@ import {
 import { toPng } from 'html-to-image'
 import { cn, formatCurrency, formatTimestamp } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import { useAccounts, useTradingData } from '@/lib/hooks'
+import { useTradingData } from '@/lib/hooks'
+import { useActiveAccount } from '@/lib/use-active-account'
 import type { Position } from '@/types'
 
 function Skeleton({ className }: { className?: string }) {
@@ -288,8 +289,7 @@ function fmtPnl(v: number): string {
 export default function AnalyticsPage() {
   const [selectedPeriod, setSelectedPeriod] = useState<'7d' | '30d' | 'all'>('30d')
 
-  const { data: accounts, isLoading: loadingAccounts } = useAccounts()
-  const account = accounts?.[0]
+  const { activeAccount: account, isLoading: loadingAccounts } = useActiveAccount()
   const { data: tradingData, isLoading: loadingTrading } = useTradingData(account?.id)
 
   const loading = loadingAccounts || loadingTrading

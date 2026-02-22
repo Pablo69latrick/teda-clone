@@ -12,14 +12,13 @@
  */
 
 import { useRealtimeSync } from '@/lib/realtime'
-import { useAccounts } from '@/lib/hooks'
+import { useActiveAccount } from '@/lib/use-active-account'
 
 export function DashboardRealtime() {
-  // Pick the first active account as the scope for realtime subscriptions.
+  // Use the globally-selected active account for realtime subscriptions.
   // When the user switches accounts the accountId ref inside useRealtimeSync
   // updates automatically via the ref pattern — no re-subscribe needed.
-  const { data: accounts } = useAccounts()
-  const activeAccountId = accounts?.[0]?.id
+  const { activeAccountId } = useActiveAccount()
 
   useRealtimeSync({ accountId: activeAccountId })
 

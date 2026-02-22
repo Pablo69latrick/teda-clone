@@ -19,6 +19,7 @@ import {
   CancelOrderSchema,
   ModifySLTPSchema,
   RequestPayoutSchema,
+  PurchaseChallengeSchema,
   formatZodErrors,
 } from '@/lib/validation'
 
@@ -870,6 +871,90 @@ export async function handleEngineWrite(req: NextRequest, apiPath: string): Prom
       processed_at: null,
       created_at: toEpochMs(payout.created_at),
       updated_at: toEpochMs(payout.updated_at),
+    }, { status: 201 })
+  }
+
+  // ── engine/purchase-challenge ──────────────────────────────────────────────
+  if (apiPath === 'engine/purchase-challenge') {
+    const body = await req.json().catch(() => ({}))
+    const parsed = PurchaseChallengeSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: formatZodErrors(parsed.error) }, { status: 400 })
+    }
+    const { template_id } = parsed.data
+
+    const { createSupabaseServerClient } = await import('@/lib/supabase/server')
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const { createSupabaseAdminClient } = await import('@/lib/supabase/server')
+    const adminPurchase = createSupabaseAdminClient()
+
+    // Verify template exists and is active
+    const { data: template } = await adminPurchase
+      .from('challenge_templates')
+      .select('*')
+      .eq('id', template_id)
+      .eq('is_active', true)
+      .eq('status', 'active')
+      .single()
+
+    if (!template) {
+      return NextResponse.json({ error: 'Challenge template not found or inactive' }, { status: 404 })
+    }
+
+    // Check max 10 active accounts per user
+    const { count } = await adminPurchase
+      .from('accounts')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('is_active', true)
+
+    if ((count ?? 0) >= 10) {
+      return NextResponse.json({ error: 'Maximum 10 active accounts reached' }, { status: 422 })
+    }
+
+    const phases = (template.phase_sequence ?? []) as Array<Record<string, unknown>>
+    const firstName = (phases[0]?.name as string) ?? 'Phase 1 — Evaluation'
+    const accountName = `${template.name} — ${firstName}`
+    const startBal = template.starting_balance
+
+    const { data: newAccount, error: insertErr } = await adminPurchase
+      .from('accounts')
+      .insert({
+        user_id:              user.id,
+        name:                 accountName,
+        account_type:         'prop',
+        base_currency:        template.base_currency ?? 'USD',
+        default_margin_mode:  'cross',
+        starting_balance:     startBal,
+        available_margin:     startBal,
+        reserved_margin:      0,
+        total_margin_required: 0,
+        injected_funds:       startBal,
+        net_worth:            startBal,
+        total_pnl:            0,
+        unrealized_pnl:       0,
+        realized_pnl:         0,
+        is_active:            true,
+        is_closed:            false,
+        account_status:       'active',
+        current_phase:        1,
+        challenge_template_id: template.id,
+      })
+      .select()
+      .single()
+
+    if (insertErr || !newAccount) {
+      console.error('[purchase-challenge] insert error:', insertErr)
+      return NextResponse.json({ error: 'Failed to create account' }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      ...newAccount,
+      created_at: toEpochMs(newAccount.created_at),
+      updated_at: toEpochMs(newAccount.updated_at),
     }, { status: 201 })
   }
 

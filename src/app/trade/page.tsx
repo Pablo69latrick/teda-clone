@@ -8,7 +8,7 @@ import { OrderFormPanel } from '@/components/trading/order-form-panel'
 import { ChartPanel } from '@/components/trading/chart-panel'
 import { BottomPanel } from '@/components/trading/bottom-panel'
 import { ChallengeStatusBar } from '@/components/trading/challenge-status-bar'
-import { useAccounts } from '@/lib/hooks'
+import { useActiveAccount } from '@/lib/use-active-account'
 import { usePriceStream } from '@/lib/use-price-stream'
 
 // Fallback used only in mock / dev mode (no Supabase configured)
@@ -71,10 +71,9 @@ export default function TradePage() {
   useEffect(() => {
     try { localStorage.setItem('vp-timeframe', timeframe) } catch {}
   }, [timeframe])
-  // Use the first active account from the session.
-  const { data: accounts } = useAccounts()
-  const account     = accounts?.[0]
-  const accountId   = account?.id ?? MOCK_ACCOUNT_ID
+  // Use the active account from the global store (persisted to localStorage)
+  const { activeAccount } = useActiveAccount()
+  const accountId   = activeAccount?.id ?? MOCK_ACCOUNT_ID
 
   // Connect SSE price stream
   usePriceStream(accountId)

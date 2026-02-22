@@ -308,6 +308,15 @@ export function useAdminPayouts() {
   return useSWR<Payout[]>('/api/proxy/admin/payouts', fetcher, ADMIN_OPTS)
 }
 
+// ─── Challenge templates (user-facing) ───────────────────────────────────────
+
+export function useChallengeTemplates() {
+  return useSWR<ChallengeTemplate[]>('/api/proxy/actions/challenge-templates', fetcher, {
+    revalidateOnFocus: false,
+    dedupingInterval: 60_000,
+  })
+}
+
 // ─── Affiliate ───────────────────────────────────────────────────────────────
 
 export function useAffiliateDashboard() {

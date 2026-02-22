@@ -4,7 +4,8 @@ import { useState } from 'react'
 import { DollarSign, Clock, CheckCircle, XCircle, Plus, ExternalLink, Loader2 } from 'lucide-react'
 import { cn, formatCurrency, timeAgo } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { useAccounts, useTradingData, usePayouts } from '@/lib/hooks'
+import { useTradingData, usePayouts } from '@/lib/hooks'
+import { useActiveAccount } from '@/lib/use-active-account'
 import { mutate } from 'swr'
 import type { PayoutStatus, PayoutMethod } from '@/types'
 
@@ -34,8 +35,7 @@ export default function PayoutsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const { data: accounts } = useAccounts()
-  const account = accounts?.[0]
+  const { activeAccount: account } = useActiveAccount()
   const accountId = account?.id
   const { data: tradingData, isLoading } = useTradingData(accountId)
   const { data: payouts, isLoading: loadingPayouts } = usePayouts(accountId)

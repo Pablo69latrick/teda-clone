@@ -213,6 +213,8 @@ interface MockState {
   crmStats: CRMStats | null
   crmRiskMetrics: CRMRiskMetrics | null
   crmTemplateAccountCounts: Record<string, number>
+  // Multi-account support
+  mockAccounts: AccountSnapshot[]
 }
 
 interface AccountSnapshot {
@@ -256,6 +258,7 @@ if (!G.__mockState) {
     crmStats: null,
     crmRiskMetrics: null,
     crmTemplateAccountCounts: {},
+    mockAccounts: [],
   }
 }
 const state = G.__mockState
@@ -656,8 +659,12 @@ function getMockData(path: string, req?: NextRequest): unknown {
     case 'auth/get-session':
       return { session: { expiresAt: new Date(Date.now() + 30 * 86400_000).toISOString(), token: 'mock-token', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ipAddress: '127.0.0.1', userAgent: 'VerticalProp-Clone', userId: 'mock-user-id' }, user: { id: 'mock-user-id', email: 'trader@example.com', name: 'Jules Trader', emailVerified: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } }
 
-    case 'actions/accounts':
-      return [computeAccount()]
+    case 'actions/accounts': {
+      // Primary account is always the live-computed one (positions/pnl)
+      const primary = computeAccount()
+      const extra = state.mockAccounts.filter(a => a.id !== primary.id)
+      return [primary, ...extra]
+    }
 
     case 'engine/trading-data': {
       const li = getInstruments()
@@ -777,6 +784,14 @@ function getMockData(path: string, req?: NextRequest): unknown {
       if (aStatus) aFiltered = aFiltered.filter(a => a.accountStatus === aStatus)
       return aFiltered.slice(aOffset, aOffset + aLimit)
     }
+    case 'actions/challenge-templates':
+      return [
+        { id: 'tmpl-free', name: 'Free Trial 10K', description: 'Try the platform risk-free', starting_balance: 10_000, base_currency: 'USD', entry_fee: 0, is_active: true, status: 'active', category: 'free_trial', phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Trial', profit_target: 0.10, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 0, max_trading_days: 14, profit_split: 0, leverage_limit: 20, news_trading_allowed: true, weekend_holding_allowed: true, martingale_detection_enabled: false }], created_at: Date.now() - 180 * 86400_000, updated_at: Date.now() - 30 * 86400_000 },
+        { id: 'tmpl-2', name: '50K Standard 2-Step', description: 'Classic two-phase evaluation', starting_balance: 50_000, base_currency: 'USD', entry_fee: 299, is_active: true, status: 'active', category: 'paid', phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.08, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 5, max_trading_days: 30, profit_split: 0, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }, { phase_number: 2, phase_type: 'evaluation', name: 'Phase 2', profit_target: 0.05, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 5, max_trading_days: 60, profit_split: 0.80, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }], created_at: Date.now() - 120 * 86400_000, updated_at: Date.now() - 10 * 86400_000 },
+        { id: 'tmpl-1', name: '100K Instant Funding', description: 'Single-phase instant funding', starting_balance: 100_000, base_currency: 'USD', entry_fee: 549, is_active: true, status: 'active', category: 'paid', phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.10, daily_loss_limit: 0.05, max_drawdown: 0.10, min_trading_days: 0, max_trading_days: null, profit_split: 0.80, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }], created_at: Date.now() - 90 * 86400_000, updated_at: Date.now() - 5 * 86400_000 },
+        { id: 'tmpl-3', name: '200K Elite', description: 'For experienced traders', starting_balance: 200_000, base_currency: 'USD', entry_fee: 1_099, is_active: true, status: 'active', category: 'paid', phase_sequence: [{ phase_number: 1, phase_type: 'evaluation', name: 'Phase 1', profit_target: 0.08, daily_loss_limit: 0.04, max_drawdown: 0.08, min_trading_days: 10, max_trading_days: 45, profit_split: 0, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }, { phase_number: 2, phase_type: 'funded', name: 'Funded', profit_target: 0, daily_loss_limit: 0.04, max_drawdown: 0.08, min_trading_days: 0, max_trading_days: null, profit_split: 0.85, leverage_limit: 100, news_trading_allowed: false, weekend_holding_allowed: true, martingale_detection_enabled: true }], created_at: Date.now() - 60 * 86400_000, updated_at: Date.now() - 2 * 86400_000 },
+      ]
+
     case 'admin/stats': return state.crmStats
     case 'admin/challenge-templates': {
       const tc = state.crmTemplateAccountCounts
@@ -1068,6 +1083,40 @@ export async function handleMockPostAsync(req: NextRequest, apiPath: string): Pr
     })
 
     return NextResponse.json({ success: true, order_id: orderId })
+  }
+
+  // ── Purchase challenge — create new mock account ──────────────────────────
+  if (apiPath === 'engine/purchase-challenge') {
+    const body = await req.json().catch(() => ({})) as { template_id?: string }
+    const templateNames: Record<string, { name: string; balance: number }> = {
+      'tmpl-free': { name: 'Free Trial 10K', balance: 10_000 },
+      'tmpl-1':    { name: '100K Instant Funding', balance: 100_000 },
+      'tmpl-2':    { name: '50K Standard 2-Step', balance: 50_000 },
+      'tmpl-3':    { name: '200K Elite', balance: 200_000 },
+    }
+    const tmpl = templateNames[body.template_id ?? ''] ?? { name: 'New Challenge', balance: 100_000 }
+
+    // Enforce 10-account limit
+    const currentCount = 1 + state.mockAccounts.length // 1 for primary
+    if (currentCount >= 10) {
+      return NextResponse.json({ error: 'Maximum 10 active accounts reached' }, { status: 422 })
+    }
+
+    const now = Date.now()
+    const newId = uid('acct')
+    const newAccount: AccountSnapshot = {
+      id: newId, user_id: 'mock-user-id', name: `${tmpl.name} — Phase 1`,
+      account_type: 'prop', account_type_config: body.template_id ?? '',
+      base_currency: 'USD', default_margin_mode: 'cross',
+      starting_balance: tmpl.balance,
+      available_margin: tmpl.balance, reserved_margin: 0, total_margin_required: 0,
+      injected_funds: tmpl.balance, net_worth: tmpl.balance, total_pnl: 0,
+      unrealized_pnl: 0, realized_pnl: 0,
+      is_active: true, is_closed: false, account_status: 'active',
+      challenge_template_id: body.template_id ?? '', created_at: now, updated_at: now,
+    }
+    state.mockAccounts.push(newAccount)
+    return NextResponse.json(newAccount, { status: 201 })
   }
 
   return null

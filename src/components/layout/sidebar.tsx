@@ -16,9 +16,21 @@ import {
   ShieldCheck,
   Medal,
   LogOut,
+  Plus,
+  Check,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-context'
+import { useActiveAccount } from '@/lib/use-active-account'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@/components/ui/dropdown-menu'
 
 // ─── Logo TEDA ────────────────────────────────────
 function VerticalLogo({ className }: { className?: string }) {
@@ -98,6 +110,100 @@ function SidebarNavItem({
   )
 }
 
+// ─── Status dot color map ──────────────────────
+const STATUS_DOT: Record<string, string> = {
+  active:  'bg-profit',
+  funded:  'bg-blue-500',
+  breached:'bg-loss',
+  passed:  'bg-yellow-500',
+  closed:  'bg-muted-foreground',
+}
+
+const STATUS_BADGE: Record<string, string> = {
+  active:  'bg-profit/15 text-profit',
+  funded:  'bg-blue-500/15 text-blue-500',
+  breached:'bg-loss/15 text-loss',
+  passed:  'bg-yellow-500/15 text-yellow-500',
+  closed:  'bg-muted-foreground/15 text-muted-foreground',
+}
+
+// ─── Account Switcher ──────────────────────────
+function AccountSwitcher() {
+  const { activeAccount, accounts, setActiveAccountId } = useActiveAccount()
+  const { user } = useAuth()
+
+  const initials = user
+    ? (user.name ?? user.email)
+        .split(/[\s@.]+/)
+        .slice(0, 2)
+        .map(s => s[0]?.toUpperCase() ?? '')
+        .join('')
+    : '?'
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="relative flex items-center cursor-pointer outline-none group transition-all duration-300 h-10 w-10 mx-auto justify-center">
+          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-xs font-bold text-foreground">
+            {initials}
+          </div>
+          {/* Status indicator */}
+          <span className={cn(
+            'absolute bottom-0.5 right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-card',
+            STATUS_DOT[activeAccount?.account_status ?? 'active'] ?? 'bg-profit'
+          )} />
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent side="right" align="end" className="w-64">
+        <DropdownMenuLabel className="text-xs text-muted-foreground font-medium">
+          Switch Account ({accounts.length}/10)
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+
+        <DropdownMenuRadioGroup
+          value={activeAccount?.id ?? ''}
+          onValueChange={(id) => setActiveAccountId(id)}
+        >
+          {accounts.map((acct) => (
+            <DropdownMenuRadioItem
+              key={acct.id}
+              value={acct.id}
+              className="flex items-start gap-2 py-2 px-2 cursor-pointer"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium truncate flex-1">
+                    {acct.name}
+                  </span>
+                  <span className={cn(
+                    'text-[10px] px-1.5 py-0.5 rounded-full font-medium capitalize shrink-0',
+                    STATUS_BADGE[acct.account_status] ?? STATUS_BADGE.active
+                  )}>
+                    {acct.account_status}
+                  </span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {formatCurrency(acct.net_worth)}
+                </span>
+              </div>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+
+        <DropdownMenuSeparator />
+        <Link
+          href="/dashboard/challenges"
+          className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-sm hover:bg-accent"
+        >
+          <Plus className="size-4" />
+          New Challenge
+        </Link>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 // ─── Main Sidebar Component ────────────────────
 interface SidebarProps {
   userRole?: 'user' | 'admin'
@@ -109,15 +215,6 @@ export function Sidebar({ userRole: userRoleProp }: SidebarProps) {
 
   // Derive role from auth context (not hardcoded prop)
   const userRole = userRoleProp ?? (user?.role as 'user' | 'admin') ?? 'user'
-
-  // Derive initials from user name or email
-  const initials = user
-    ? (user.name ?? user.email)
-        .split(/[\s@.]+/)
-        .slice(0, 2)
-        .map(s => s[0]?.toUpperCase() ?? '')
-        .join('')
-    : '?'
 
   const isActive = (href: string) => {
     if (href === '/dashboard/overview') return pathname === href || pathname === '/dashboard'
@@ -161,17 +258,18 @@ export function Sidebar({ userRole: userRoleProp }: SidebarProps) {
       {/* Divider */}
       <div className="h-px bg-border/50 mx-1 my-2" />
 
-      {/* Get Funded CTA */}
-      <NavTooltip label="Get Funded">
+      {/* Get Funded CTA → Challenges */}
+      <NavTooltip label="Challenges">
         <Link
-          href="/dashboard/competitions"
+          href="/dashboard/challenges"
           className={cn(
             'relative group mb-2 overflow-hidden rounded-lg transition-all duration-300 ease-out',
             'mx-auto w-10 h-9 flex items-center justify-center',
             'bg-gradient-to-r from-primary to-primary/80',
             'hover:from-primary/90 hover:to-primary/70',
             'hover:shadow-md hover:shadow-primary/20',
-            'active:scale-[0.98]'
+            'active:scale-[0.98]',
+            pathname.startsWith('/dashboard/challenges') && 'ring-1 ring-primary/40'
           )}
         >
           <Zap className="size-[18px] text-primary-foreground" />
@@ -191,16 +289,8 @@ export function Sidebar({ userRole: userRoleProp }: SidebarProps) {
       {/* Divider */}
       <div className="h-px bg-border/50 mx-1 my-2" />
 
-      {/* User avatar */}
-      <NavTooltip label={user?.name ?? user?.email ?? 'Account'}>
-        <button className="relative flex items-center cursor-pointer outline-none group transition-all duration-300 h-10 w-10 mx-auto justify-center">
-          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-xs font-bold text-foreground">
-            {initials}
-          </div>
-          {/* Online indicator */}
-          <span className="absolute bottom-0.5 right-0.5 h-2.5 w-2.5 rounded-full bg-profit ring-2 ring-card" />
-        </button>
-      </NavTooltip>
+      {/* Account Switcher */}
+      <AccountSwitcher />
 
       {/* Settings */}
       <NavTooltip label="Settings">
