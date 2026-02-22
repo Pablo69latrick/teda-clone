@@ -29,6 +29,7 @@ import {
   Filter,
 } from 'lucide-react'
 import { cn, timeAgo } from '@/lib/utils'
+import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { useAdminUsers } from '@/lib/hooks'
 import type { AdminUser } from '@/types'
@@ -65,17 +66,6 @@ const MOCK_ACTIVITY = [
   { id: 'a7', type: 'ban', user: 'Lucas Martin', actor: 'Admin Jules', time: Date.now() - 6 * 86400_000, reason: 'Multiple rule violations' },
   { id: 'a8', type: 'promote', user: 'Nina Patel', actor: 'Admin Jules', time: Date.now() - 7 * 86400_000, reason: 'Support team expansion' },
 ]
-
-// ─── Toast ─────────────────────────────────────────────────────────────
-function Toast({ message, onClose }: { message: string; onClose: () => void }) {
-  return (
-    <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-foreground text-background px-4 py-3 rounded-xl shadow-2xl text-sm font-medium">
-      <div className="size-2 rounded-full bg-profit" />
-      {message}
-      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100"><X className="size-4" /></button>
-    </div>
-  )
-}
 
 // ─── Ban Modal ──────────────────────────────────────────────────────────
 function BanModal({ user, action, reason, onReasonChange, onConfirm, onCancel }: {
@@ -368,20 +358,14 @@ export default function ProfilerPage() {
   const [sort, setSort] = useState<SortKey>('lastSeen')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  const { data: users, isLoading } = useAdminUsers()
+  const { data: users, isLoading, mutate: refreshUsers } = useAdminUsers()
 
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null)
   const [banModal, setBanModal] = useState<{ user: AdminUser; action: 'ban' | 'unban' } | null>(null)
   const [banReason, setBanReason] = useState('')
-  const [toast, setToast] = useState<string | null>(null)
-  const [localBans, setLocalBans] = useState<Record<string, boolean>>({})
+  const [banLoading, setBanLoading] = useState(false)
 
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3000)
-  }
-
-  const getIsBanned = (user: AdminUser) => localBans[user.id] !== undefined ? localBans[user.id] : user.banned
+  const getIsBanned = (user: AdminUser) => user.banned
 
   const sortedUsers = useMemo(() => {
     if (!users) return []
@@ -402,10 +386,10 @@ export default function ProfilerPage() {
   }
 
   const allFiltered = useMemo(() => filterUsers(sortedUsers, search), [sortedUsers, search])
-  const bannedFiltered = useMemo(() => filterUsers(sortedUsers.filter(u => getIsBanned(u)), search), [sortedUsers, search, localBans])
+  const bannedFiltered = useMemo(() => filterUsers(sortedUsers.filter(u => getIsBanned(u)), search), [sortedUsers, search])
   const adminFiltered = useMemo(() => filterUsers(sortedUsers.filter(u => u.role === 'admin'), search), [sortedUsers, search])
 
-  const totalBanned = useMemo(() => (users ?? []).filter(u => getIsBanned(u)).length, [users, localBans])
+  const totalBanned = useMemo(() => (users ?? []).filter(u => getIsBanned(u)).length, [users])
   const total2FA = (users ?? []).filter(u => u.twoFactorEnabled).length
   const totalAdmins = (users ?? []).filter(u => u.role === 'admin').length
   const totalUnverified = (users ?? []).filter(u => !u.emailVerified).length
@@ -416,14 +400,34 @@ export default function ProfilerPage() {
     else { setSort(key); setSortDir('desc') }
   }
 
-  const handleBanConfirm = () => {
+  const handleBanConfirm = async () => {
     if (!banModal) return
     const { user, action } = banModal
-    setLocalBans(prev => ({ ...prev, [user.id]: action === 'ban' }))
-    showToast(action === 'ban' ? `🚫 ${user.name} banned` : `✅ ${user.name} unbanned`)
-    if (selectedUser?.id === user.id) setSelectedUser({ ...user, banned: action === 'ban' })
-    setBanModal(null)
-    setBanReason('')
+    setBanLoading(true)
+    try {
+      const res = await fetch('/api/proxy/admin/ban-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: user.id,
+          ban: action === 'ban',
+          reason: banReason || undefined,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }))
+        throw new Error(err.error ?? 'Failed')
+      }
+      toast.success(action === 'ban' ? `${user.name} banned` : `${user.name} unbanned`)
+      await refreshUsers()
+      if (selectedUser?.id === user.id) setSelectedUser(null)
+    } catch (e: unknown) {
+      toast.error(`Action failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+    } finally {
+      setBanLoading(false)
+      setBanModal(null)
+      setBanReason('')
+    }
   }
 
   const tableProps = {
@@ -431,7 +435,7 @@ export default function ProfilerPage() {
     getIsBanned,
     onSelectUser: setSelectedUser,
     onBanModal: (u: AdminUser, action: 'ban' | 'unban') => setBanModal({ user: u, action }),
-    onResetPassword: (u: AdminUser) => showToast(`🔑 Password reset sent to ${u.email}`),
+    onResetPassword: (u: AdminUser) => toast.info(`Password reset sent to ${u.email}`),
     sort,
     sortDir,
     toggleSort,
@@ -874,8 +878,8 @@ export default function ProfilerPage() {
           bannedState={getIsBanned(selectedUser)}
           onBanClick={() => setBanModal({ user: selectedUser, action: 'ban' })}
           onUnbanClick={() => setBanModal({ user: selectedUser, action: 'unban' })}
-          onResetPassword={() => showToast(`🔑 Password reset sent to ${selectedUser.email}`)}
-          onPromote={() => showToast(`⬆️ ${selectedUser.name} promoted to admin`)}
+          onResetPassword={() => toast.info(`Password reset sent to ${selectedUser.email}`)}
+          onPromote={() => toast.info(`${selectedUser.name} promoted to admin`)}
           onClose={() => setSelectedUser(null)}
         />
       )}
@@ -892,8 +896,6 @@ export default function ProfilerPage() {
         />
       )}
 
-      {/* Toast */}
-      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </div>
   )
 }

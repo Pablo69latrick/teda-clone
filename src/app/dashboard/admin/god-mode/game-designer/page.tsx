@@ -29,6 +29,7 @@ import {
   Search,
 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
+import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { useAdminTemplates } from '@/lib/hooks'
 import type { ChallengeTemplate, PhaseRule } from '@/types'
@@ -129,17 +130,6 @@ const GLOBAL_RULES = [
     { rule: 'Copy Trading', standard: 'No', advanced: 'No', pro: 'No', description: 'Copy trading from external signals' },
   ]},
 ]
-
-// ─── Toast ─────────────────────────────────────────────────────────────
-function Toast({ message, onClose }: { message: string; onClose: () => void }) {
-  return (
-    <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-foreground text-background px-4 py-3 rounded-xl shadow-2xl text-sm font-medium">
-      <div className="size-2 rounded-full bg-profit" />
-      {message}
-      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100"><X className="size-4" /></button>
-    </div>
-  )
-}
 
 // ─── Confirm Modal ──────────────────────────────────────────────────────
 function ConfirmModal({ title, description, confirmLabel, confirmCls, onConfirm, onCancel }: {
@@ -434,12 +424,9 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ─── Main Page ──────────────────────────────────────────────────────────
 export default function GameDesignerPage() {
-  const { data: templates, isLoading } = useAdminTemplates()
+  const { data: templates, isLoading, mutate: refreshTemplates } = useAdminTemplates()
 
   const [activeTab, setActiveTab] = useState<Tab>('templates')
-  const [localTemplates, setLocalTemplates] = useState<ChallengeTemplate[] | null>(null)
-  const [localActiveMap, setLocalActiveMap] = useState<Record<string, boolean>>({})
-  const [toast, setToast] = useState<string | null>(null)
   const [confirmModal, setConfirmModal] = useState<{ title: string; description: string; confirmLabel: string; confirmCls: string; onConfirm: () => void } | null>(null)
   const [templateSearch, setTemplateSearch] = useState('')
 
@@ -464,7 +451,7 @@ export default function GameDesignerPage() {
   }
   const randomizeSeed = () => setSimSeed(Math.floor(Math.random() * 9999) + 1)
 
-  const displayTemplates = localTemplates ?? templates ?? []
+  const displayTemplates = templates ?? []
 
   const filteredTemplates = useMemo(() => {
     if (!templateSearch) return displayTemplates
@@ -472,9 +459,18 @@ export default function GameDesignerPage() {
     return displayTemplates.filter(t => t.name.toLowerCase().includes(q) || t.category?.toLowerCase().includes(q))
   }, [displayTemplates, templateSearch])
 
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3000)
+  // ── API helper for template updates ────────────────────────────
+  const callUpdateTemplate = async (templateId: string, updates: Record<string, unknown>) => {
+    const res = await fetch('/api/proxy/admin/update-template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template_id: templateId, ...updates }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Unknown error' }))
+      throw new Error(err.error ?? 'Failed')
+    }
+    return res.json()
   }
 
   const handleToggleActive = (tmplId: string, currentActive: boolean) => {
@@ -482,45 +478,54 @@ export default function GameDesignerPage() {
     setConfirmModal({
       title: next ? 'Activate Template?' : 'Pause Template?',
       description: next ? 'New users will be able to start this challenge.' : 'No new accounts can be created for this challenge until reactivated.',
-      confirmLabel: next ? '✅ Activate' : '⏸️ Pause',
+      confirmLabel: next ? 'Activate' : 'Pause',
       confirmCls: next ? 'bg-profit' : 'bg-yellow-500',
-      onConfirm: () => {
-        setLocalActiveMap(prev => ({ ...prev, [tmplId]: next }))
-        showToast(next ? '✅ Template activated' : '⏸️ Template paused')
+      onConfirm: async () => {
+        try {
+          await callUpdateTemplate(tmplId, { is_active: next })
+          toast.success(next ? 'Template activated' : 'Template paused')
+          await refreshTemplates()
+        } catch (e: unknown) {
+          toast.error(`Failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+        }
         setConfirmModal(null)
       },
     })
   }
 
-  const handleEdit = (tmplId: string, updated: ChallengeTemplate) => {
-    const base = localTemplates ?? templates ?? []
-    setLocalTemplates(base.map(t => t.id === tmplId ? updated : t))
-    showToast('✅ Phase rules saved')
+  const handleEdit = async (tmplId: string, updated: ChallengeTemplate) => {
+    try {
+      await callUpdateTemplate(tmplId, {
+        name: updated.name,
+        description: updated.description,
+        entry_fee: updated.entry_fee,
+        phase_sequence: updated.phase_sequence,
+      })
+      toast.success('Phase rules saved')
+      await refreshTemplates()
+    } catch (e: unknown) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+    }
   }
 
   const handleDuplicate = (tmpl: ChallengeTemplate) => {
-    const base = localTemplates ?? templates ?? []
-    const dupe: ChallengeTemplate = { ...tmpl, id: `${tmpl.id}-copy-${Date.now()}`, name: `${tmpl.name} (Copy)`, is_active: false, status: 'paused', account_count: 0 }
-    setLocalTemplates([...base, dupe])
-    showToast(`📋 "${tmpl.name}" duplicated`)
+    toast.info(`"${tmpl.name}" duplication — coming soon`)
   }
 
   const handleDelete = (tmplId: string, tmplName: string) => {
     setConfirmModal({
       title: 'Delete Template?',
       description: `This will permanently delete "${tmplName}". Existing accounts on this template won't be affected.`,
-      confirmLabel: '🗑️ Delete',
+      confirmLabel: 'Delete',
       confirmCls: 'bg-loss',
       onConfirm: () => {
-        const base = localTemplates ?? templates ?? []
-        setLocalTemplates(base.filter(t => t.id !== tmplId))
-        showToast(`🗑️ "${tmplName}" deleted`)
+        toast.info(`"${tmplName}" deletion — coming soon`)
         setConfirmModal(null)
       },
     })
   }
 
-  const activeCount = displayTemplates.filter(t => (localActiveMap[t.id] ?? t.is_active)).length
+  const activeCount = displayTemplates.filter(t => t.is_active).length
   const totalAccounts = displayTemplates.reduce((s, t) => s + (t.account_count ?? 0), 0)
   const avgFee = displayTemplates.length ? displayTemplates.reduce((s, t) => s + t.entry_fee, 0) / displayTemplates.length : 0
 
@@ -536,7 +541,7 @@ export default function GameDesignerPage() {
           <p className="text-sm text-muted-foreground">Manage challenge templates, phase rules, and parameters</p>
         </div>
         <button
-          onClick={() => showToast('✨ New template creation coming soon')}
+          onClick={() => toast.info('New template creation coming soon')}
           className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 transition-colors text-xs font-semibold"
         >
           <Plus className="size-3.5" /> New Template
@@ -613,8 +618,8 @@ export default function GameDesignerPage() {
                   <TemplateCard
                     key={tmpl.id}
                     tmpl={tmpl}
-                    localActive={localActiveMap[tmpl.id]}
-                    onToggleActive={() => handleToggleActive(tmpl.id, localActiveMap[tmpl.id] ?? tmpl.is_active)}
+                    localActive={undefined}
+                    onToggleActive={() => handleToggleActive(tmpl.id, tmpl.is_active)}
                     onEdit={updated => handleEdit(tmpl.id, updated)}
                     onDuplicate={() => handleDuplicate(tmpl)}
                     onDelete={() => handleDelete(tmpl.id, tmpl.name)}
@@ -760,7 +765,7 @@ export default function GameDesignerPage() {
                   ))}
                 </div>
                 <button
-                  onClick={() => showToast(`Edit ${tier.size} template coming soon`)}
+                  onClick={() => toast.info(`Edit ${tier.size} template coming soon`)}
                   className="flex items-center justify-center gap-1 w-full py-2 rounded-lg bg-muted/40 hover:bg-muted text-xs font-medium transition-colors text-muted-foreground hover:text-foreground"
                 >
                   <Pencil className="size-3" /> Edit
@@ -1219,7 +1224,6 @@ export default function GameDesignerPage() {
       )}
 
       {/* Toast */}
-      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </div>
   )
 }

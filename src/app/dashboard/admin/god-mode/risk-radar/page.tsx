@@ -26,24 +26,13 @@ import {
   Grid3X3,
 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
+import { toast } from 'sonner'
 import { useAdminRiskMetrics, useAdminAccounts } from '@/lib/hooks'
 import { Badge } from '@/components/ui/badge'
 import type { AdminAccount } from '@/types'
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />
-}
-
-function ActionToast({ message, onClose }: { message: string; onClose: () => void }) {
-  return (
-    <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-foreground text-background px-4 py-3 rounded-xl shadow-2xl text-sm font-medium">
-      <div className="size-2 rounded-full bg-profit" />
-      {message}
-      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100">
-        <XCircle className="size-4" />
-      </button>
-    </div>
-  )
 }
 
 function RiskKpi({ label, value, sub, icon: Icon, loading, severity }: {
@@ -71,7 +60,7 @@ function RiskKpi({ label, value, sub, icon: Icon, loading, severity }: {
 }
 
 // ─── Breach Account Row ───────────────────────────────────────────────
-function BreachRow({ acc, onAction }: { acc: AdminAccount; onAction: (msg: string) => void }) {
+function BreachRow({ acc, onAction, onForceClose }: { acc: AdminAccount; onAction: (msg: string) => void; onForceClose: (acc: AdminAccount) => void }) {
   const [expanded, setExpanded] = useState(false)
   const drawdownPct = acc.injectedFunds > 0
     ? Math.abs((acc.injectedFunds - acc.availableMargin - acc.reservedMargin) / acc.injectedFunds) * 100
@@ -125,8 +114,8 @@ function BreachRow({ acc, onAction }: { acc: AdminAccount; onAction: (msg: strin
             <Flag className="size-3.5" />
           </button>
           <button
-            onClick={() => onAction(`🔒 Force-closed positions for ${acc.userName ?? acc.id}`)}
-            title="Force close"
+            onClick={() => onForceClose(acc)}
+            title="Force close all positions"
             className="size-7 rounded flex items-center justify-center hover:bg-loss/15 text-loss transition-colors"
           >
             <XCircle className="size-3.5" />
@@ -239,12 +228,38 @@ export default function RiskRadarPage() {
   const [activeTab, setActiveTab] = useState<Tab>('live')
   const [filter, setFilter] = useState<'all' | 'breached' | 'active'>('all')
   const [search, setSearch] = useState('')
-  const [toast, setToast] = useState<string | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
 
-  const showToast = (msg: string) => {
-    setToast(msg)
-    setTimeout(() => setToast(null), 3000)
+  const handleForceClose = async (acc: AdminAccount) => {
+    try {
+      // Fetch open positions for this account
+      const posRes = await fetch(`/api/proxy/engine/positions?account_id=${acc.id}&status=open`)
+      if (!posRes.ok) throw new Error('Failed to fetch positions')
+      const positions: { id: string }[] = await posRes.json()
+      if (positions.length === 0) {
+        toast.info(`No open positions for ${acc.userName ?? acc.id}`)
+        return
+      }
+      // Close each position via admin force-close
+      const results = await Promise.allSettled(
+        positions.map(pos =>
+          fetch('/api/proxy/admin/force-close-position', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position_id: pos.id }),
+          })
+        )
+      )
+      const closed = results.filter(r => r.status === 'fulfilled').length
+      const failed = results.filter(r => r.status === 'rejected').length
+      if (failed > 0) {
+        toast.warning(`Force-closed ${closed}/${positions.length} positions for ${acc.userName ?? acc.id}`)
+      } else {
+        toast.success(`Force-closed ${closed} positions for ${acc.userName ?? acc.id}`)
+      }
+    } catch (e: unknown) {
+      toast.error(`Force-close failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+    }
   }
 
   const atRiskAccounts = useMemo(() => {
@@ -349,7 +364,7 @@ export default function RiskRadarPage() {
                 </div>
               </div>
               <button
-                onClick={() => showToast('🚨 Breach escalated to risk team')}
+                onClick={() => toast.error('Breach escalated to risk team')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-loss text-white text-xs font-bold hover:bg-loss/90 transition-colors shrink-0"
               >
                 <Zap className="size-3.5" />
@@ -441,13 +456,13 @@ export default function RiskRadarPage() {
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={() => showToast(`⚠️ Warning sent to ${risk.largest_open_position!.account_id}`)}
+                  onClick={() => toast.info(`Warning sent to ${risk.largest_open_position!.account_id}`)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-600 text-xs font-medium hover:bg-yellow-500/20 border border-yellow-500/20 transition-colors"
                 >
                   <Bell className="size-3" /> Warn
                 </button>
                 <button
-                  onClick={() => showToast(`🔒 Force closed ${risk.largest_open_position!.account_id}`)}
+                  onClick={() => toast.info(`Force closed ${risk.largest_open_position!.account_id}`)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-loss/10 text-loss text-xs font-medium hover:bg-loss/20 border border-loss/20 transition-colors"
                 >
                   <XCircle className="size-3" /> Force Close
@@ -660,7 +675,7 @@ export default function RiskRadarPage() {
                     </div>
                   )
                   : atRiskAccounts.map(acc => (
-                      <BreachRow key={acc.id} acc={acc} onAction={showToast} />
+                      <BreachRow key={acc.id} acc={acc} onAction={(msg) => toast.success(msg)} onForceClose={handleForceClose} />
                     ))
               }
             </div>
@@ -714,7 +729,7 @@ export default function RiskRadarPage() {
                       </div>
                     </div>
                     <button
-                      onClick={() => showToast(`✅ Alert ${alert.id} resolved`)}
+                      onClick={() => toast.success(`Alert ${alert.id} resolved`)}
                       className="h-6 px-2 text-[10px] font-medium rounded-lg bg-muted/40 hover:bg-muted transition-colors text-muted-foreground hover:text-foreground border border-border/30 shrink-0"
                     >
                       Resolve
@@ -864,7 +879,6 @@ export default function RiskRadarPage() {
         </div>
       )}
 
-      {toast && <ActionToast message={toast} onClose={() => setToast(null)} />}
     </div>
   )
 }

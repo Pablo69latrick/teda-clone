@@ -4,7 +4,6 @@ import { useState, useMemo } from 'react'
 import {
   DollarSign,
   TrendingUp,
-  TrendingDown,
   Clock,
   CheckCircle,
   XCircle,
@@ -30,8 +29,13 @@ import {
   Settings2,
 } from 'lucide-react'
 import { cn, formatCurrency, timeAgo } from '@/lib/utils'
-import { useAdminStats } from '@/lib/hooks'
+import { toast } from 'sonner'
+import { useAdminStats, useAdminPayouts } from '@/lib/hooks'
 import { Badge } from '@/components/ui/badge'
+import type { Payout } from '@/types'
+
+// Enriched payout returned by admin/payouts endpoint (has joined user info)
+type AdminPayout = Payout & { user_name: string; user_email: string }
 
 function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />
@@ -40,14 +44,7 @@ function Skeleton({ className }: { className?: string }) {
 // ─── Types ─────────────────────────────────────────────────────────────
 type PayoutMethod = 'all' | 'bank' | 'crypto' | 'paypal'
 
-// ─── Mock payout queue ─────────────────────────────────────────────────
-const INITIAL_PAYOUTS = [
-  { id: 'pay-1', user: 'Alex Rivera', email: 'alex@example.com', amount: 18_400, method: 'crypto' as const, wallet: '0xaB3c...8dF1', requested_at: Date.now() - 2 * 86400_000, account: 'acc-0004', profitSplit: 80, daysInFunded: 14, risk: 'low' as const },
-  { id: 'pay-2', user: 'Jamie Chen', email: 'jamie@example.com', amount: 9_200, method: 'bank' as const, wallet: 'IBAN: FR76 3000...', requested_at: Date.now() - 1 * 86400_000, account: 'acc-0012', profitSplit: 80, daysInFunded: 8, risk: 'medium' as const },
-  { id: 'pay-3', user: 'Sam Patel', email: 'sam@example.com', amount: 14_400, method: 'bank' as const, wallet: 'IBAN: GB29 NWBK...', requested_at: Date.now() - 3600_000, account: 'acc-0022', profitSplit: 85, daysInFunded: 21, risk: 'low' as const },
-  { id: 'pay-4', user: 'Maria Torres', email: 'maria@example.com', amount: 6_800, method: 'paypal' as const, wallet: 'maria.torres@pm.com', requested_at: Date.now() - 7200_000, account: 'acc-0035', profitSplit: 80, daysInFunded: 5, risk: 'high' as const },
-  { id: 'pay-5', user: 'Chris Lee', email: 'chris@example.com', amount: 22_000, method: 'crypto' as const, wallet: '0x4aF7...2cC1', requested_at: Date.now() - 4 * 86400_000, account: 'acc-0041', profitSplit: 90, daysInFunded: 30, risk: 'low' as const },
-]
+// Mock data removed — real payouts fetched via useAdminPayouts()
 
 // ─── Monthly revenue data ───────────────────────────────────────────────
 const MONTHLY = [
@@ -59,15 +56,7 @@ const MONTHLY = [
   { month: 'Dec', revenue: 412_800, payouts: 71_000, net: 341_800, accounts: 574 },
 ]
 
-// ─── Processed payout history ───────────────────────────────────────────
-const PROCESSED_HISTORY = [
-  { id: 'hist-1', user: 'David Kim', email: 'david@example.com', amount: 11_500, method: 'bank' as const, status: 'approved' as const, processedAt: Date.now() - 2 * 86400_000, account: 'acc-0089', profitSplit: 80 },
-  { id: 'hist-2', user: 'Emma Wilson', email: 'emma@example.com', amount: 3_200, method: 'paypal' as const, status: 'rejected' as const, processedAt: Date.now() - 3 * 86400_000, account: 'acc-0067', profitSplit: 80, rejectReason: 'KYC not completed' },
-  { id: 'hist-3', user: 'Lucas Martin', email: 'lucas@example.com', amount: 8_700, method: 'crypto' as const, status: 'approved' as const, processedAt: Date.now() - 4 * 86400_000, account: 'acc-0102', profitSplit: 85 },
-  { id: 'hist-4', user: 'Sophia Brown', email: 'sophia@example.com', amount: 15_000, method: 'bank' as const, status: 'approved' as const, processedAt: Date.now() - 5 * 86400_000, account: 'acc-0155', profitSplit: 90 },
-  { id: 'hist-5', user: 'Oliver Davis', email: 'oliver@example.com', amount: 4_100, method: 'crypto' as const, status: 'rejected' as const, processedAt: Date.now() - 6 * 86400_000, account: 'acc-0199', profitSplit: 80, rejectReason: 'Suspicious activity detected' },
-  { id: 'hist-6', user: 'Ava Johnson', email: 'ava@example.com', amount: 19_800, method: 'bank' as const, status: 'approved' as const, processedAt: Date.now() - 7 * 86400_000, account: 'acc-0231', profitSplit: 80 },
-]
+// Processed history derived from useAdminPayouts() where status !== 'pending'
 
 // ─── Revenue by type ────────────────────────────────────────────────────
 const REVENUE_BY_TYPE = [
@@ -159,14 +148,15 @@ function RevenueLineChart({ data }: { data: typeof MONTHLY }) {
 // ─── Confirm Modal ──────────────────────────────────────────────────────
 interface ConfirmModalProps {
   type: 'approve' | 'reject'
-  payout: { user: string; amount: number; wallet: string; profitSplit: number; daysInFunded: number; method: string }
+  payout: AdminPayout
   rejectReason: string
   onRejectReasonChange: (v: string) => void
   onConfirm: () => void
   onCancel: () => void
+  loading?: boolean
 }
 
-function ConfirmModal({ type, payout, rejectReason, onRejectReasonChange, onConfirm, onCancel }: ConfirmModalProps) {
+function ConfirmModal({ type, payout, rejectReason, onRejectReasonChange, onConfirm, onCancel, loading }: ConfirmModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onCancel}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
@@ -177,17 +167,16 @@ function ConfirmModal({ type, payout, rejectReason, onRejectReasonChange, onConf
         <h3 className="text-sm font-bold text-center mb-1">{type === 'approve' ? 'Approve Payout?' : 'Reject Payout?'}</h3>
         <p className="text-xs text-muted-foreground text-center mb-5">
           {type === 'approve'
-            ? `Send ${formatCurrency(payout.amount)} to ${payout.user}`
-            : `Deny the payout request from ${payout.user}`}
+            ? `Send ${formatCurrency(payout.amount)} to ${payout.user_name}`
+            : `Deny the payout request from ${payout.user_name}`}
         </p>
         <div className="bg-muted/30 rounded-xl p-3 mb-4 space-y-2 text-xs">
           {[
-            { label: 'Trader', value: payout.user },
+            { label: 'Trader', value: payout.user_name },
             { label: 'Amount', value: formatCurrency(payout.amount), cls: 'font-bold text-foreground' },
             { label: 'Method', value: METHOD_LABELS[payout.method] ?? payout.method },
-            { label: 'Destination', value: <span className="font-mono text-[10px]">{payout.wallet}</span> },
-            { label: 'Profit Split', value: `${payout.profitSplit}%` },
-            { label: 'Days in Funded', value: `${payout.daysInFunded}d` },
+            { label: 'Destination', value: <span className="font-mono text-[10px]">{payout.wallet_address ?? '—'}</span> },
+            { label: 'Account', value: <span className="font-mono text-[10px]">{payout.account_id.slice(0, 8)}…</span> },
           ].map(row => (
             <div key={row.label} className="flex items-center justify-between">
               <span className="text-muted-foreground">{row.label}</span>
@@ -208,38 +197,18 @@ function ConfirmModal({ type, payout, rejectReason, onRejectReasonChange, onConf
           </div>
         )}
         <div className="flex gap-2">
-          <button onClick={onCancel} className="flex-1 py-2 px-4 rounded-xl bg-muted/50 hover:bg-muted text-xs font-medium transition-colors">Cancel</button>
+          <button onClick={onCancel} disabled={loading} className="flex-1 py-2 px-4 rounded-xl bg-muted/50 hover:bg-muted text-xs font-medium transition-colors disabled:opacity-50">Cancel</button>
           <button
             onClick={onConfirm}
-            className={cn('flex-1 py-2 px-4 rounded-xl text-xs font-bold transition-colors text-white', type === 'approve' ? 'bg-profit hover:bg-profit/90' : 'bg-loss hover:bg-loss/90')}
+            disabled={loading}
+            className={cn('flex-1 py-2 px-4 rounded-xl text-xs font-bold transition-colors text-white disabled:opacity-50', type === 'approve' ? 'bg-profit hover:bg-profit/90' : 'bg-loss hover:bg-loss/90')}
           >
-            {type === 'approve' ? '✅ Confirm Approve' : '❌ Confirm Reject'}
+            {loading ? 'Processing…' : type === 'approve' ? 'Confirm Approve' : 'Confirm Reject'}
           </button>
         </div>
       </div>
     </div>
   )
-}
-
-// ─── Toast ──────────────────────────────────────────────────────────────
-function Toast({ message, type, onClose }: { message: string; type: 'success' | 'error'; onClose: () => void }) {
-  return (
-    <div className={cn('fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl text-sm font-medium', type === 'success' ? 'bg-foreground text-background' : 'bg-loss text-white')}>
-      <div className={cn('size-2 rounded-full', type === 'success' ? 'bg-profit' : 'bg-white/60')} />
-      {message}
-      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100"><X className="size-4" /></button>
-    </div>
-  )
-}
-
-// ─── Payout Risk Badge ─────────────────────────────────────────────────
-function RiskBadge({ risk }: { risk: 'low' | 'medium' | 'high' }) {
-  const map = {
-    low: 'bg-profit/10 text-profit border-profit/20',
-    medium: 'bg-yellow-500/10 text-yellow-600 border-yellow-500/20',
-    high: 'bg-loss/10 text-loss border-loss/20',
-  }
-  return <span className={cn('text-[9px] font-semibold border px-1.5 py-0.5 rounded-full uppercase tracking-wide', map[risk])}>{risk}</span>
 }
 
 // ─── Expandable payout row ──────────────────────────────────────────────
@@ -250,7 +219,7 @@ function PayoutRow({
   onApprove,
   onReject,
 }: {
-  p: typeof INITIAL_PAYOUTS[0]
+  p: AdminPayout
   isSelected: boolean
   onSelect: () => void
   onApprove: () => void
@@ -267,28 +236,23 @@ function PayoutRow({
         </td>
         <td className="px-3 py-3">
           <div className="flex items-center gap-2">
-            <div className="size-7 rounded-full bg-primary/15 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">{p.user[0]}</div>
+            <div className="size-7 rounded-full bg-primary/15 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">{(p.user_name || '?')[0]}</div>
             <div>
-              <div className="font-semibold text-foreground text-xs">{p.user}</div>
-              <div className="text-[10px] text-muted-foreground">{p.email}</div>
+              <div className="font-semibold text-foreground text-xs">{p.user_name || 'Unknown'}</div>
+              <div className="text-[10px] text-muted-foreground">{p.user_email}</div>
             </div>
           </div>
         </td>
         <td className="px-3 py-3 text-right">
           <div className="font-bold tabular-nums text-sm text-foreground">{formatCurrency(p.amount)}</div>
-          <div className="text-[10px] text-muted-foreground">{p.daysInFunded}d funded</div>
         </td>
         <td className="px-3 py-3">
           <div className="flex items-center gap-1.5">
             <MethodIcon className="size-3 text-muted-foreground" />
             <span className="text-[10px] text-muted-foreground">{METHOD_LABELS[p.method]}</span>
           </div>
-          <div className="font-mono text-[10px] text-muted-foreground/60 mt-0.5">{p.wallet.slice(0, 18)}…</div>
+          <div className="font-mono text-[10px] text-muted-foreground/60 mt-0.5">{(p.wallet_address ?? '—').slice(0, 18)}…</div>
         </td>
-        <td className="px-3 py-3 text-center">
-          <span className="text-xs font-semibold text-primary">{p.profitSplit}%</span>
-        </td>
-        <td className="px-3 py-3 text-center"><RiskBadge risk={p.risk} /></td>
         <td className="px-3 py-3 text-right text-muted-foreground text-[10px]">{timeAgo(p.requested_at)}</td>
         <td className="px-5 py-3">
           <div className="flex items-center justify-end gap-1.5">
@@ -315,25 +279,19 @@ function PayoutRow({
       </tr>
       {expanded && (
         <tr className="border-b border-border/20 bg-muted/10">
-          <td colSpan={8} className="px-8 py-4">
-            <div className="grid grid-cols-4 gap-4 text-xs">
+          <td colSpan={6} className="px-8 py-4">
+            <div className="grid grid-cols-3 gap-4 text-xs">
               <div className="bg-card rounded-lg p-3 border border-border/30">
                 <div className="text-[10px] text-muted-foreground mb-1">Account ID</div>
-                <div className="font-mono font-semibold">{p.account}</div>
+                <div className="font-mono font-semibold">{p.account_id.slice(0, 8)}…</div>
               </div>
               <div className="bg-card rounded-lg p-3 border border-border/30">
-                <div className="text-[10px] text-muted-foreground mb-1">Full Wallet</div>
-                <div className="font-mono text-[10px] break-all">{p.wallet}</div>
+                <div className="text-[10px] text-muted-foreground mb-1">Wallet / Destination</div>
+                <div className="font-mono text-[10px] break-all">{p.wallet_address ?? '—'}</div>
               </div>
               <div className="bg-card rounded-lg p-3 border border-border/30">
-                <div className="text-[10px] text-muted-foreground mb-1">Profit Split</div>
-                <div className="font-bold text-primary">{p.profitSplit}% / {100 - p.profitSplit}%</div>
-                <div className="text-[10px] text-muted-foreground">Trader / Platform</div>
-              </div>
-              <div className="bg-card rounded-lg p-3 border border-border/30">
-                <div className="text-[10px] text-muted-foreground mb-1">Platform Cut</div>
-                <div className="font-bold text-profit">{formatCurrency(p.amount * (100 - p.profitSplit) / p.profitSplit)}</div>
-                <div className="text-[10px] text-muted-foreground">Already retained</div>
+                <div className="text-[10px] text-muted-foreground mb-1">TX Hash</div>
+                <div className="font-mono text-[10px] break-all">{p.tx_hash ?? 'Not yet processed'}</div>
               </div>
             </div>
           </td>
@@ -378,64 +336,91 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 // ─── Main Page ──────────────────────────────────────────────────────────
 export default function TreasurerPage() {
   const { data: stats, isLoading } = useAdminStats()
+  const { data: allPayouts, mutate: refreshPayouts } = useAdminPayouts()
 
   const [activeTab, setActiveTab] = useState<Tab>('overview')
-  const [payouts, setPayouts] = useState(INITIAL_PAYOUTS)
   const [search, setSearch] = useState('')
   const [histSearch, setHistSearch] = useState('')
   const [methodFilter, setMethodFilter] = useState<PayoutMethod>('all')
   const [confirmModal, setConfirmModal] = useState<{ type: 'approve' | 'reject'; payoutId: string } | null>(null)
   const [rejectReason, setRejectReason] = useState('')
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
-  const [processedIds, setProcessedIds] = useState<Set<string>>(new Set())
+  const [actionLoading, setActionLoading] = useState(false)
+
+  // Cast to AdminPayout since admin/payouts enriches with user_name/user_email
+  const payouts = (allPayouts ?? []) as AdminPayout[]
+  const pendingPayouts = useMemo(() => payouts.filter(p => p.status === 'pending'), [payouts])
+  const processedPayouts = useMemo(() => payouts.filter(p => p.status !== 'pending'), [payouts])
 
   const filteredPayouts = useMemo(() => {
     const q = search.toLowerCase()
-    return payouts.filter(p => {
-      if (processedIds.has(p.id)) return false
+    return pendingPayouts.filter(p => {
       if (methodFilter !== 'all' && p.method !== methodFilter) return false
       if (!q) return true
-      return p.user.toLowerCase().includes(q) || p.email.toLowerCase().includes(q) || p.account.includes(q)
+      return p.user_name.toLowerCase().includes(q) || p.user_email.toLowerCase().includes(q) || p.account_id.includes(q)
     })
-  }, [payouts, search, methodFilter, processedIds])
+  }, [pendingPayouts, search, methodFilter])
 
   const filteredHistory = useMemo(() => {
     const q = histSearch.toLowerCase()
-    if (!q) return PROCESSED_HISTORY
-    return PROCESSED_HISTORY.filter(h => h.user.toLowerCase().includes(q) || h.email.toLowerCase().includes(q))
-  }, [histSearch])
+    if (!q) return processedPayouts
+    return processedPayouts.filter(h => h.user_name.toLowerCase().includes(q) || h.user_email.toLowerCase().includes(q))
+  }, [histSearch, processedPayouts])
 
   const totalPending = filteredPayouts.reduce((s, p) => s + p.amount, 0)
-  const confirmingPayout = confirmModal ? INITIAL_PAYOUTS.find(p => p.id === confirmModal.payoutId) : null
+  const confirmingPayout = confirmModal ? pendingPayouts.find(p => p.id === confirmModal.payoutId) : null
 
-  const showToast = (message: string, type: 'success' | 'error') => {
-    setToast({ message, type })
-    setTimeout(() => setToast(null), 3500)
+  // ── API call to approve/reject a single payout ─────────────────────
+  const callApprovePayout = async (payoutId: string, action: 'approve' | 'reject', adminNote?: string) => {
+    const res = await fetch('/api/proxy/admin/approve-payout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payout_id: payoutId, action, admin_note: adminNote || undefined }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Unknown error' }))
+      throw new Error(err.error ?? 'Failed')
+    }
+    return res.json()
   }
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (!confirmModal || !confirmingPayout) return
     const isApprove = confirmModal.type === 'approve'
-    setProcessedIds(prev => new Set([...prev, confirmModal.payoutId]))
-    showToast(
-      isApprove
-        ? `✅ ${formatCurrency(confirmingPayout.amount)} approved for ${confirmingPayout.user}`
-        : `❌ Payout rejected${rejectReason ? `: ${rejectReason}` : ''}`,
-      isApprove ? 'success' : 'error'
-    )
-    setConfirmModal(null)
-    setRejectReason('')
-    setBulkSelected(prev => { const n = new Set(prev); n.delete(confirmModal.payoutId); return n })
+    setActionLoading(true)
+    try {
+      await callApprovePayout(confirmModal.payoutId, isApprove ? 'approve' : 'reject', rejectReason || undefined)
+      toast.success(
+        isApprove
+          ? `${formatCurrency(confirmingPayout.amount)} approved for ${confirmingPayout.user_name}`
+          : `Payout rejected${rejectReason ? `: ${rejectReason}` : ''}`
+      )
+      await refreshPayouts()
+    } catch (e: unknown) {
+      toast.error(`Action failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+    } finally {
+      setActionLoading(false)
+      setConfirmModal(null)
+      setRejectReason('')
+      setBulkSelected(prev => { const n = new Set(prev); n.delete(confirmModal.payoutId); return n })
+    }
   }
 
-  const handleBulkApprove = () => {
+  const handleBulkApprove = async () => {
     if (bulkSelected.size === 0) return
     const ids = [...bulkSelected]
-    const total = payouts.filter(p => ids.includes(p.id)).reduce((s, p) => s + p.amount, 0)
-    setProcessedIds(prev => new Set([...prev, ...ids]))
-    setBulkSelected(new Set())
-    showToast(`✅ ${ids.length} payouts approved (${formatCurrency(total)})`, 'success')
+    const total = pendingPayouts.filter(p => ids.includes(p.id)).reduce((s, p) => s + p.amount, 0)
+    setActionLoading(true)
+    try {
+      await Promise.all(ids.map(id => callApprovePayout(id, 'approve')))
+      toast.success(`${ids.length} payouts approved (${formatCurrency(total)})`)
+      setBulkSelected(new Set())
+      await refreshPayouts()
+    } catch (e: unknown) {
+      toast.error(`Bulk approve failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+    } finally {
+      setActionLoading(false)
+    }
   }
 
   const toggleBulk = (id: string) => setBulkSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -484,7 +469,7 @@ export default function TreasurerPage() {
           <p className="text-sm text-muted-foreground mt-0.5">Platform financials, revenue tracking & payout management</p>
         </div>
         <button
-          onClick={() => showToast('Financial report exported', 'success')}
+          onClick={() => toast.success('Financial report exported')}
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-muted/40 hover:bg-muted transition-colors text-xs font-medium text-muted-foreground hover:text-foreground shrink-0"
         >
           <Download className="size-3.5" />
@@ -660,7 +645,7 @@ export default function TreasurerPage() {
             {[
               { label: 'Pending Payouts', value: pendingCount.toString(), sub: 'Awaiting approval', icon: Clock, cls: 'text-yellow-500' },
               { label: 'Total Pending', value: formatCurrency(totalPending), sub: 'Capital to release', icon: DollarSign, cls: 'text-foreground' },
-              { label: 'High Risk', value: filteredPayouts.filter(p => p.risk === 'high').length.toString(), sub: 'Require extra review', icon: AlertTriangle, cls: 'text-loss' },
+              { label: 'Avg Amount', value: filteredPayouts.length ? formatCurrency(totalPending / filteredPayouts.length) : '$0', sub: 'Per payout request', icon: AlertTriangle, cls: 'text-primary' },
             ].map(stat => (
               <div key={stat.label} className="rounded-xl bg-card border border-border/50 p-4 flex items-center gap-3">
                 <div className="size-9 rounded-xl bg-muted/50 flex items-center justify-center shrink-0">
@@ -735,8 +720,6 @@ export default function TreasurerPage() {
                     <th className="text-left px-3 py-2">Trader</th>
                     <th className="text-right px-3 py-2">Amount</th>
                     <th className="text-left px-3 py-2">Method</th>
-                    <th className="text-center px-3 py-2">Split</th>
-                    <th className="text-center px-3 py-2">Risk</th>
                     <th className="text-right px-3 py-2">Requested</th>
                     <th className="text-right px-5 py-2">Actions</th>
                   </tr>
@@ -744,7 +727,7 @@ export default function TreasurerPage() {
                 <tbody>
                   {filteredPayouts.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-5 py-10 text-center text-xs text-muted-foreground">
+                      <td colSpan={6} className="px-5 py-10 text-center text-xs text-muted-foreground">
                         <div className="flex flex-col items-center gap-2">
                           <CheckCircle className="size-6 text-profit opacity-50" />
                           All payouts have been processed
@@ -856,9 +839,9 @@ export default function TreasurerPage() {
           {/* History KPIs */}
           <div className="grid grid-cols-3 gap-3">
             {[
-              { label: 'Approved', value: PROCESSED_HISTORY.filter(h => h.status === 'approved').length, sub: `${formatCurrency(PROCESSED_HISTORY.filter(h => h.status === 'approved').reduce((s, h) => s + h.amount, 0))} paid`, icon: CheckCircle, cls: 'text-profit' },
-              { label: 'Rejected', value: PROCESSED_HISTORY.filter(h => h.status === 'rejected').length, sub: 'Denied requests', icon: XCircle, cls: 'text-loss' },
-              { label: 'Total Processed', value: PROCESSED_HISTORY.length, sub: 'All decisions', icon: History, cls: 'text-muted-foreground' },
+              { label: 'Approved', value: processedPayouts.filter(h => h.status === 'approved').length, sub: `${formatCurrency(processedPayouts.filter(h => h.status === 'approved').reduce((s, h) => s + h.amount, 0))} paid`, icon: CheckCircle, cls: 'text-profit' },
+              { label: 'Rejected', value: processedPayouts.filter(h => h.status === 'rejected').length, sub: 'Denied requests', icon: XCircle, cls: 'text-loss' },
+              { label: 'Total Processed', value: processedPayouts.length, sub: 'All decisions', icon: History, cls: 'text-muted-foreground' },
             ].map(stat => (
               <div key={stat.label} className="rounded-xl bg-card border border-border/50 p-4 flex items-center gap-3">
                 <div className="size-9 rounded-xl bg-muted/50 flex items-center justify-center shrink-0">
@@ -898,7 +881,6 @@ export default function TreasurerPage() {
                     <th className="text-left px-5 py-2">Trader</th>
                     <th className="text-right px-3 py-2">Amount</th>
                     <th className="text-left px-3 py-2">Method</th>
-                    <th className="text-center px-3 py-2">Split</th>
                     <th className="text-center px-3 py-2">Status</th>
                     <th className="text-right px-5 py-2">Processed</th>
                   </tr>
@@ -910,10 +892,10 @@ export default function TreasurerPage() {
                       <tr key={h.id} className="border-b border-border/20 hover:bg-muted/20 transition-colors">
                         <td className="px-5 py-2.5">
                           <div className="flex items-center gap-2">
-                            <div className="size-7 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold shrink-0">{h.user[0]}</div>
+                            <div className="size-7 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold shrink-0">{(h.user_name || '?')[0]}</div>
                             <div>
-                              <div className="font-medium">{h.user}</div>
-                              <div className="text-[10px] text-muted-foreground">{h.email}</div>
+                              <div className="font-medium">{h.user_name || 'Unknown'}</div>
+                              <div className="text-[10px] text-muted-foreground">{h.user_email}</div>
                             </div>
                           </div>
                         </td>
@@ -924,18 +906,17 @@ export default function TreasurerPage() {
                             <span className="text-[10px] text-muted-foreground">{METHOD_LABELS[h.method]}</span>
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 text-center text-[10px] font-semibold text-primary">{h.profitSplit}%</td>
                         <td className="px-3 py-2.5 text-center">
                           {h.status === 'approved' ? (
-                            <Badge variant="secondary" className="text-[9px] bg-profit/10 text-profit border-profit/20">✅ Approved</Badge>
+                            <Badge variant="secondary" className="text-[9px] bg-profit/10 text-profit border-profit/20">Approved</Badge>
                           ) : (
                             <div>
-                              <Badge variant="secondary" className="text-[9px] bg-loss/10 text-loss border-loss/20">❌ Rejected</Badge>
-                              {h.rejectReason && <div className="text-[9px] text-muted-foreground mt-0.5 max-w-[120px] truncate">{h.rejectReason}</div>}
+                              <Badge variant="secondary" className="text-[9px] bg-loss/10 text-loss border-loss/20">Rejected</Badge>
+                              {h.admin_note && <div className="text-[9px] text-muted-foreground mt-0.5 max-w-[120px] truncate">{h.admin_note}</div>}
                             </div>
                           )}
                         </td>
-                        <td className="px-5 py-2.5 text-right text-muted-foreground">{timeAgo(h.processedAt)}</td>
+                        <td className="px-5 py-2.5 text-right text-muted-foreground">{h.processed_at ? timeAgo(h.processed_at) : '—'}</td>
                       </tr>
                     )
                   })}
@@ -1134,11 +1115,9 @@ export default function TreasurerPage() {
           onRejectReasonChange={setRejectReason}
           onConfirm={handleConfirm}
           onCancel={() => { setConfirmModal(null); setRejectReason('') }}
+          loading={actionLoading}
         />
       )}
-
-      {/* Toast */}
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   )
 }
